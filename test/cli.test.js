@@ -77,3 +77,18 @@ test('participant session and live status commands work with runtime server', as
   });
   runtime.kill('SIGTERM');
 });
+
+test('participant supports analyzer inspection and language filtering', () => {
+  const repo = makeRepo();
+  const bin = path.join('/home/runner/work/archie/archie', 'bin', 'participant');
+  fs.mkdirSync(path.join(repo, 'services'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'services', 'app.py'), 'if __name__ == "__main__":\n  print("ok")\n');
+
+  const analyzers = execFileSync('node', [bin, 'analyzers', '--repo', repo], { encoding: 'utf8' });
+  assert.ok(analyzers.includes('JavaScript / TypeScript'));
+  assert.ok(analyzers.includes('Python'));
+
+  const summary = execFileSync('node', [bin, 'analyze', '--repo', repo, '--summary', '--language', 'python'], { encoding: 'utf8' });
+  assert.ok(summary.includes('"languages"'));
+  assert.ok(summary.includes('Python'));
+});

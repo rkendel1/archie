@@ -51,6 +51,10 @@ test('runtime server tracks model versions, sessions, and events', async () => {
   assert.equal(session.intent.status, 'explicit');
   assert.equal(session.status, 'active');
 
+  const summary = await request(server.baseUrl, 'GET', '/v1/model/summary');
+  assert.ok(Array.isArray(summary.analyzers));
+  assert.ok(Array.isArray(summary.languages));
+
   fs.writeFileSync(path.join(repo, 'src', 'runtime-manifest.ts'), 'export type RuntimeManifest = { v: number; next?: string }\n');
   const update = await request(server.baseUrl, 'POST', '/v1/analyze', { files: ['src/runtime-manifest.ts'] });
   assert.equal(update.model_version, 2);

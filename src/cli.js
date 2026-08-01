@@ -15,7 +15,8 @@ const {
   githubReport,
   modelPath,
   confirmUnderstanding,
-  correctArchitecture
+  correctArchitecture,
+  projectModelByLanguage
 } = require('./model');
 const { startRuntimeServer } = require('./runtime');
 
@@ -81,23 +82,28 @@ async function command(args) {
   }
 
   if (cmd === 'analyze') {
+    const languageFilter = argValue(args, '--language', null);
     const model = buildModel(root);
     saveModel(root, model);
+    const projection = languageFilter ? projectModelByLanguage(model, languageFilter) : model;
     if (args.includes('--summary')) {
+      const languages = projection.discovery.languages.map((entry) => `${entry.language} ${entry.percentage}%`);
       print({
         systemUnderstanding: {
           primaryApplication: path.basename(root),
-          detectedArchitecture: model.architecture,
-          executionEnvironments: model.runtimes,
-          importantFiles: model.importantFiles.slice(0, 5),
+          detectedArchitecture: projection.architecture,
+          executionEnvironments: projection.runtimes,
+          languages,
+          analyzers: model.analyzers || [],
+          importantFiles: projection.importantFiles.slice(0, 5),
           importantBoundaries: ['Application → Capability SDK', 'Capability → Runtime ABI', 'Runtime → Provider'],
-          uncertainties: model.uncertainties,
-          confidence: `${model.confidence}%`,
-          systemStatus: model.systemStatus || 'pending-review'
+          uncertainties: projection.uncertainties,
+          confidence: `${projection.confidence}%`,
+          systemStatus: projection.systemStatus || 'pending-review'
         }
       });
     } else {
-      print({ ok: true, modelPath: modelPath(root), confidence: model.confidence });
+      print({ ok: true, modelPath: modelPath(root), confidence: projection.confidence, language: languageFilter || 'all' });
     }
     return;
   }
@@ -122,6 +128,19 @@ async function command(args) {
       'Active change session:',
       `  ${server.repositorySession.activeChangeSession?.id || 'none'}`
     ].join('\n'));
+    return;
+  }
+
+  if (cmd === 'analyzers') {
+    const model = buildModel(root);
+    saveModel(root, model);
+    print({
+      analyzers: (model.analyzers || []).map((analyzer) => ({
+        name: analyzer.language === 'javascript/typescript' ? 'JavaScript / TypeScript' : 'Python',
+        status: analyzer.status,
+        incrementalAnalysis: analyzer.incrementalAnalysis
+      }))
+    });
     return;
   }
 
@@ -284,7 +303,8 @@ async function command(args) {
   print({
     usage: [
       'participant init [--repo <path>]',
-      'participant analyze [--repo <path>] [--summary] [--ci]',
+      'participant analyze [--repo <path>] [--summary] [--ci] [--language <name>]',
+      'participant analyzers [--repo <path>]',
       'participant watch [--repo <path>] [--once]',
       'participant check <architecture|contracts|capabilities> [--repo <path>]',
       'participant impact [--repo <path>] [--files f1,f2]',

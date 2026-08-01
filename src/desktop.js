@@ -208,8 +208,22 @@ function startDesktopServer(port = Number(process.env.PORT || 43111)) {
       return sendJson(res, 200, {
         ok: true,
         repo,
+        identity: {
+          repository: path.basename(repo),
+          location: repo,
+          branch: 'local',
+          modelVersion: 1,
+          lastAnalysis: model.generatedAt
+        },
+        technologyProfile: {
+          languages: model.discovery.languages,
+          frameworks: model.discovery.frameworks,
+          dependencies: Object.keys(model.discovery.dependencies || {})
+        },
         projectStructure: model.discovery,
         graph: { nodes: model.graph.nodes.length, edges: model.graph.edges.length },
+        runtimes: model.runtimes,
+        capabilities: model.importantFiles.filter((entry) => /capability|feature|service/i.test(entry.file)).length,
         importantFiles: model.importantFiles.slice(0, 10),
         architectureBoundaries: model.architecture,
         uncertainties: model.uncertainties,

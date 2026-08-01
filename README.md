@@ -17,6 +17,8 @@ Commands:
 
 - `participant init`
 - `participant analyze --summary`
+- `participant analyze --summary --language python`
+- `participant analyzers`
 - `participant watch`
 - `participant serve`
 - `participant status --live`
@@ -45,6 +47,7 @@ Desktop features in this MVP:
 - Build live system graph summary
 - Identify important files
 - Show architecture/runtime boundaries
+- Show polyglot language and analyzer summary (JS/TS + Python)
 - Watch file changes
 - Show change impact
 - Confirm or correct inferred architecture
