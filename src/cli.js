@@ -43,6 +43,24 @@ function argValue(args, name, fallback = null) {
   return fallback;
 }
 
+function readJsonFile(filePath) {
+  const abs = path.resolve(filePath);
+  return JSON.parse(fs.readFileSync(abs, 'utf8'));
+}
+
+function toYaml(value, indent = 0) {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  const pad = ' '.repeat(indent);
+  if (Array.isArray(value)) {
+    return value.map((item) => `${pad}- ${typeof item === 'object' ? `\n${toYaml(item, indent + 2)}` : toYaml(item, 0)}`).join('\n');
+  }
+  return Object.entries(value).map(([key, entry]) => {
+    if (entry && typeof entry === 'object') return `${pad}${key}:\n${toYaml(entry, indent + 2)}`;
+    return `${pad}${key}: ${toYaml(entry, 0)}`;
+  }).join('\n');
+}
+
 function runtimePortFromArgs(args) {
   return Number(argValue(args, '--port', process.env.ARCHIE_RUNTIME_PORT || 4317));
 }
@@ -63,24 +81,6 @@ function runtimeRequest({ port, method = 'GET', pathname, body }) {
           resolve(JSON.parse(data || '{}'));
         } catch {
           resolve({ error: data || `Invalid response from runtime API ${pathname}` });
-        }
-
-        function readJsonFile(filePath) {
-          const abs = path.resolve(filePath);
-          return JSON.parse(fs.readFileSync(abs, 'utf8'));
-        }
-
-        function toYaml(value, indent = 0) {
-          if (value === null || value === undefined) return 'null';
-          if (typeof value !== 'object') return JSON.stringify(value);
-          const pad = ' '.repeat(indent);
-          if (Array.isArray(value)) {
-            return value.map((item) => `${pad}- ${typeof item === 'object' ? `\n${toYaml(item, indent + 2)}` : toYaml(item, 0)}`).join('\n');
-          }
-          return Object.entries(value).map(([key, entry]) => {
-            if (entry && typeof entry === 'object') return `${pad}${key}:\n${toYaml(entry, indent + 2)}`;
-            return `${pad}${key}: ${toYaml(entry, 0)}`;
-          }).join('\n');
         }
       });
     });
@@ -255,6 +255,80 @@ async function command(args) {
       fail(`Runtime API is not available on port ${port}. Start it with: participant serve --port ${port}`);
     }
     fail('Usage: participant session <start|status|complete|abandon> [--intent "..."] [--port <n>]');
+  }
+
+  if (cmd === 'change') {
+    const sub = args[1];
+    const port = runtimePortFromArgs(args);
+    try {
+      if (sub === 'propose') {
+        const intent = argValue(args, '--intent', '');
+        const files = String(argValue(args, '--files', '')).split(',').map((entry) => entry.trim()).filter(Boolean);
+        const capabilities = String(argValue(args, '--capabilities', '')).split(',').map((entry) => entry.trim()).filter(Boolean);
+        const runtimes = String(argValue(args, '--runtimes', '')).split(',').map((entry) => entry.trim()).filter(Boolean);
+        const contracts = String(argValue(args, '--contracts', '')).split(',').map((entry) => entry.trim()).filter(Boolean);
+        const proposal = await runtimeRequest({
+          port,
+          method: 'POST',
+          pathname: '/v1/changes/proposals',
+          body: {
+            actor: { type: 'agent', id: 'participant-cli', name: 'Participant CLI' },
+            intent: { summary: intent, desiredOutcome: intent },
+            files,
+            capabilities,
+            runtimes,
+            contracts
+          }
+        });
+        print(proposal);
+        return;
+      }
+      if (sub === 'review') {
+        const review = await runtimeRequest({ port, method: 'POST', pathname: '/v1/changes/review' });
+        if (review.error) return print(review);
+        print(formatChangeReview(review));
+        return;
+      }
+      if (sub === 'guidance') {
+        const guidance = await runtimeRequest({ port, method: 'GET', pathname: '/v1/changes/guidance' });
+        if (guidance.error) return print(guidance);
+        print(formatChangeReview(guidance));
+        return;
+      }
+    } catch {
+      fail(`Runtime API is not available on port ${port}. Start it with: participant serve --port ${port}`);
+    }
+    fail([
+      'Usage:',
+      'participant change propose --intent "<summary>" [--files f1,f2] [--capabilities c1,c2] [--runtimes r1,r2] [--contracts k1,k2] [--port <n>]',
+      'participant change review [--port <n>]',
+      'participant change guidance [--port <n>]'
+    ].join('\n'));
+  }
+
+  if (cmd === 'context') {
+    const port = runtimePortFromArgs(args);
+    const changeId = argValue(args, '--change', '');
+    if (!changeId) fail('Usage: participant context --change <change_session_id|proposal_id> [--format json|yaml|summary] [--port <n>]');
+    try {
+      const format = argValue(args, '--format', 'json').toLowerCase();
+      const context = await runtimeRequest({ port, method: 'GET', pathname: `/v1/context/changes/${changeId}` });
+      if (format === 'yaml') return print(toYaml(context));
+      if (format === 'summary') {
+        return print({
+          change: context.change?.intent || '',
+          capabilities: context.relevantSystem?.capabilities || [],
+          runtimes: context.relevantSystem?.runtimes || [],
+          contracts: context.relevantSystem?.contracts || [],
+          constraints: context.constraints || [],
+          requiredEvidence: context.requiredEvidence || []
+        });
+      }
+      print(context);
+      return;
+    } catch {
+      fail(`Runtime API is not available on port ${port}. Start it with: participant serve --port ${port}`);
+    }
   }
 
   if (cmd === 'agent') {
@@ -515,6 +589,10 @@ async function command(args) {
       'participant session status [--port <n>]',
       'participant session complete [--port <n>]',
       'participant session abandon [--port <n>]',
+      'participant change propose --intent "<summary>" [--files f1,f2] [--capabilities c1,c2] [--runtimes r1,r2] [--contracts k1,k2] [--port <n>]',
+      'participant change review [--port <n>]',
+      'participant change guidance [--port <n>]',
+      'participant context --change <change_session_id|proposal_id> [--format json|yaml|summary] [--port <n>]',
       'participant agent discover [--port <n>]',
       'participant agent start --name "<name>" [--port <n>]',
       'participant agent register --id <id> --name "<name>" --capabilities read,write,plan,verify [--port <n>]',
@@ -534,3 +612,25 @@ if (require.main === module) {
 }
 
 module.exports = { command };
+
+function formatChangeReview(review) {
+  const constraints = review.required_constraints || [];
+  const risks = review.open_risks || [];
+  const order = review.suggested_implementation_order || [];
+  return [
+    'CHANGE REVIEW',
+    `Status: ${review.status || 'UNKNOWN'}`,
+    `Confidence: ${review.confidence ?? 'n/a'}`,
+    'System impact:',
+    `  Capabilities: ${review.system_impact?.capabilities || 0}`,
+    `  Runtimes: ${review.system_impact?.runtimes || 0}`,
+    `  Contracts: ${review.system_impact?.contracts || 0}`,
+    `  Important files: ${review.system_impact?.important_files || 0}`,
+    'Required constraints:',
+    ...(constraints.length ? constraints.map((entry) => `  ✓ ${entry}`) : ['  ✓ None']),
+    'Open risks:',
+    ...(risks.length ? risks.map((entry) => `  ${entry.severity}  ${entry.message}`) : ['  None']),
+    'Suggested implementation order:',
+    ...(order.length ? order.map((entry, index) => `  ${index + 1}. ${entry}`) : ['  1. Implement and verify'])
+  ].join('\n');
+}

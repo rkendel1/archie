@@ -10,6 +10,9 @@ const { evaluateDeclaredFiles } = require('../participation/change-coordinator')
 const { observeImplementation } = require('../participation/implementation-observer');
 const { classifyEvidence } = require('../participation/evidence-coordinator');
 const { reviewCompletion } = require('../participation/completion-engine');
+const { createChangeProposal } = require('../protocols/change-proposal');
+const { interventionEngine } = require('../intervention');
+const { assembleChangeContext } = require('../context');
 const {
   buildModel,
   saveModel,
@@ -180,6 +183,7 @@ class RepositorySession {
       declaredFiles: declaration.declared_files,
       unexpectedFiles: declaration.unexpected_files
     });
+    this.refreshInterventions(impact);
 
     this.eventBus.publish('analysis.completed', {
       mode: analysis.mode,
@@ -233,6 +237,73 @@ class RepositorySession {
         fallback_reason: analysis.fallback_reason
       }
     };
+  }
+
+  proposeChange(input = {}) {
+    if (!this.activeChangeSession || this.activeChangeSession.status !== 'active') {
+      this.startChangeSession(input.intent?.summary || input.intent || '');
+    }
+    const proposal = createChangeProposal(input, {
+      sessionId: this.activeChangeSession.id,
+      actorType: input.actor?.type || 'agent',
+      actorId: input.actor?.id || this.activeChangeSession.agent_session_id || 'unknown',
+      actorName: input.actor?.name
+    });
+    updateChangeSession(this.activeChangeSession, {
+      declaredFiles: proposal.scope.declaredFiles,
+      requiredEvidence: proposal.constraints.requiredEvidence,
+      changeProposal: proposal
+    });
+    this.eventBus.publish('change.proposed', { proposal }, this.eventContext());
+    return proposal;
+  }
+
+  reviewActiveChange() {
+    if (!this.activeChangeSession) return null;
+    const proposal = this.activeChangeSession.change_proposal || this.proposeChange({});
+    const files = proposal.scope?.declaredFiles?.length ? proposal.scope.declaredFiles : this.activeChangeSession.files;
+    const impact = computeImpact(this.model, files);
+    const interventionResult = this.refreshInterventions(impact);
+    const high = interventionResult.summary.high;
+    proposal.status = high ? 'constrained' : 'approved';
+    proposal.updatedAt = new Date().toISOString();
+    updateChangeSession(this.activeChangeSession, { changeProposal: proposal });
+    const orderedInterventions = interventionResult.interventions;
+    const review = {
+      proposal,
+      status: proposal.status.toUpperCase(),
+      confidence: Number((0.86 - high * 0.07).toFixed(2)),
+      system_impact: {
+        capabilities: impact.affected.capabilities || 0,
+        runtimes: impact.affected.runtimes.length,
+        contracts: impact.affected.contracts.length,
+        important_files: impact.affected.importantFiles.length
+      },
+      required_constraints: this.activeChangeSession.constraints.map((entry) => entry.statement || entry).filter(Boolean),
+      open_risks: orderedInterventions.slice(0, 5).map((item) => ({
+        severity: item.severity.toUpperCase(),
+        type: item.type,
+        message: item.message
+      })),
+      suggested_implementation_order: buildImplementationOrder(impact, proposal),
+      interventions: orderedInterventions
+    };
+    this.eventBus.publish('change.reviewed', review, this.eventContext());
+    return review;
+  }
+
+  getActiveGuidance() {
+    if (!this.activeChangeSession) return null;
+    return this.reviewActiveChange();
+  }
+
+  getChangeContext(changeId = null) {
+    const session = this.activeChangeSession;
+    if (!session) return null;
+    if (changeId && session.id !== changeId && session.change_proposal?.id !== changeId) return null;
+    const interventions = session.interventions || [];
+    const proposal = session.change_proposal || createChangeProposal({}, { sessionId: session.id });
+    return assembleChangeContext({ proposal, model: this.model, interventions });
   }
 
   rescan() {
@@ -405,6 +476,32 @@ class RepositorySession {
     return completion;
   }
 
+  refreshInterventions(impact = null) {
+    if (!this.activeChangeSession) return { interventions: [], summary: { open: 0, high: 0, medium: 0, low: 0 } };
+    const proposal = this.activeChangeSession.change_proposal;
+    if (!proposal) return { interventions: [], summary: { open: 0, high: 0, medium: 0, low: 0 } };
+    const computedImpact = impact || computeImpact(this.model, this.activeChangeSession.files);
+    const evaluation = interventionEngine({
+      model: this.model,
+      proposal,
+      impact: computedImpact,
+      changeSession: this.activeChangeSession,
+      evidence: summarizeEvidence(this.evidenceState),
+      affectedCapabilities: computedImpact.affected.capabilities ? ['analytics.execution'] : []
+    });
+    updateChangeSession(this.activeChangeSession, {
+      interventions: evaluation.interventions,
+      interventionSummary: evaluation.summary
+    });
+    if (evaluation.summary.open) {
+      this.eventBus.publish('intervention.detected', {
+        summary: evaluation.summary,
+        interventions: evaluation.interventions
+      }, this.eventContext());
+    }
+    return evaluation;
+  }
+
   listAgentEvents(sessionId, sinceSequence = 0) {
     const session = this.ensureAgentChangeSession(sessionId);
     if (!session) return null;
@@ -466,3 +563,13 @@ class RepositorySession {
 module.exports = {
   RepositorySession
 };
+
+function buildImplementationOrder(impact, proposal) {
+  const order = [];
+  if (impact.affected.contracts.length) order.push('Extend the canonical contract with compatibility first');
+  if (impact.affected.runtimes.length) order.push('Update runtime adapters before worker implementation');
+  if (proposal.scope?.declaredFiles?.length) order.push('Implement declared files in reviewed scope order');
+  order.push('Add contract and integration evidence');
+  order.push('Run final verification for affected capabilities');
+  return order;
+}

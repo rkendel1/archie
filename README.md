@@ -23,6 +23,10 @@ Commands:
 - `participant serve`
 - `participant status --live`
 - `participant session start --intent "..."`
+- `participant change propose --intent "Add anomaly detection" --files src/analytics.ts,workers/anomaly-worker.rs`
+- `participant change review`
+- `participant change guidance`
+- `participant context --change <change_session_id_or_proposal_id> --format summary`
 - `participant agent discover`
 - `participant agent register --id coding-agent-01 --name "Local Coding Agent" --capabilities read,write,plan,verify`
 - `participant agent context --session <agent_session_id> --intent "..." --detail focused --format markdown`

@@ -63,9 +63,41 @@ test('participant session and live status commands work with runtime server', as
 
   const start = execFileSync('node', [bin, 'session', 'start', '--port', port, '--intent', 'Implement runtime API'], { encoding: 'utf8' });
   assert.ok(start.includes('"status": "active"'));
+  const startedSession = JSON.parse(start);
 
   const status = execFileSync('node', [bin, 'status', '--live', '--port', port], { encoding: 'utf8' });
   assert.ok(status.includes('ARCHIE LIVE STATUS'));
+
+  const propose = execFileSync('node', [
+    bin,
+    'change',
+    'propose',
+    '--port',
+    port,
+    '--intent',
+    'Add anomaly detection to analytics',
+    '--files',
+    'src/runtime-manifest.ts,src/analytics-worker.rs'
+  ], { encoding: 'utf8' });
+  assert.ok(propose.includes('"proposal"'));
+
+  const review = execFileSync('node', [bin, 'change', 'review', '--port', port], { encoding: 'utf8' });
+  assert.ok(review.includes('CHANGE REVIEW'));
+
+  const guidance = execFileSync('node', [bin, 'change', 'guidance', '--port', port], { encoding: 'utf8' });
+  assert.ok(guidance.includes('Open risks:'));
+
+  const assembledContext = execFileSync('node', [
+    bin,
+    'context',
+    '--port',
+    port,
+    '--change',
+    startedSession.id,
+    '--format',
+    'summary'
+  ], { encoding: 'utf8' });
+  assert.ok(assembledContext.includes('"requiredEvidence"'));
 
   const complete = execFileSync('node', [bin, 'session', 'complete', '--port', port], { encoding: 'utf8' });
   assert.ok(complete.includes('"status": "completed"'));
