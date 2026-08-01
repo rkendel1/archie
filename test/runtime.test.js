@@ -50,6 +50,8 @@ test('runtime server tracks model versions, sessions, and events', async () => {
   const session = await request(server.baseUrl, 'POST', '/v1/sessions', { intent: 'Add dataset insight capabilities' });
   assert.equal(session.intent.status, 'explicit');
   assert.equal(session.status, 'active');
+  assert.equal(session.change_room.status, 'active');
+  assert.ok(session.change_room.buzz.dependency.pinnedCommit);
 
   const summary = await request(server.baseUrl, 'GET', '/v1/model/summary');
   assert.ok(Array.isArray(summary.analyzers));
@@ -107,6 +109,11 @@ test('runtime server supports agent participation workflow', async () => {
   assert.equal(intent.agent_session_id, agent.session_id);
   assert.equal(intent.intent.status, 'understood');
 
+  const room = await request(server.baseUrl, 'GET', '/v1/changes/active/room');
+  assert.equal(room.room.changeSessionId, intent.id);
+  assert.ok(room.room.participants.some((participant) => participant.role === 'system-intelligence-advisor'));
+  assert.ok(room.room.participants.some((participant) => participant.role === 'implementation-advisor'));
+
   const context = await request(server.baseUrl, 'GET', `/v1/agent/sessions/${agent.session_id}/context?detail=focused`);
   assert.ok(Array.isArray(context.constraints));
   assert.ok(Array.isArray(context.required_evidence));
@@ -155,6 +162,25 @@ test('runtime server supports agent participation workflow', async () => {
 
   const guidance = await request(server.baseUrl, 'GET', '/v1/changes/guidance');
   assert.equal(guidance.status, review.status);
+
+  const challenge = await request(server.baseUrl, 'POST', '/v1/changes/active/participants', {
+    identity: { type: 'llm', name: 'Independent Architecture LLM', provider: 'external' },
+    role: 'independent-reasoning-advisor',
+    capabilities: ['reasoning', 'challenge'],
+    status: 'active'
+  });
+  assert.equal(challenge.participant.role, 'independent-reasoning-advisor');
+
+  const contribution = await request(server.baseUrl, 'POST', '/v1/changes/active/contributions', {
+    participantId: challenge.participant.id,
+    kind: 'challenge',
+    subject: { type: 'architecture' },
+    content: { summary: 'Consider compatibility adapter before contract migration' }
+  });
+  assert.equal(contribution.contribution.kind, 'challenge');
+
+  const contributions = await request(server.baseUrl, 'GET', '/v1/changes/active/contributions?kind=challenge');
+  assert.ok(contributions.contributions.some((entry) => entry.id === contribution.contribution.id));
 
   const changeContext = await request(server.baseUrl, 'GET', `/v1/context/changes/${proposal.proposal.id}`);
   assert.equal(changeContext.change.id, proposal.proposal.id);

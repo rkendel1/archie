@@ -32,6 +32,7 @@ function createChangeSession(intent) {
       score: 0,
       status: 'in_progress'
     },
+    change_room: null,
     agent_session_id: null,
     declared_files: [],
     unexpected_files: [],
@@ -41,6 +42,7 @@ function createChangeSession(intent) {
     required_evidence: [],
     verification: null,
     completion: null,
+    advisory_contributions: [],
     change_proposal: null,
     interventions: [],
     intervention_summary: { open: 0, high: 0, medium: 0, low: 0 },
@@ -59,12 +61,14 @@ function updateChangeSession(session, update = {}) {
   if (update.systemImpact) session.system_impact = update.systemImpact;
   if (update.evidence) session.evidence = update.evidence;
   if (update.assurance) session.assurance = update.assurance;
+  if (update.changeRoom) session.change_room = update.changeRoom;
   if (Array.isArray(update.declaredFiles)) session.declared_files = Array.from(new Set(update.declaredFiles)).sort();
   if (Array.isArray(update.unexpectedFiles)) session.unexpected_files = Array.from(new Set(update.unexpectedFiles)).sort();
   if (Array.isArray(update.constraints)) session.constraints = update.constraints;
   if (Array.isArray(update.requiredEvidence)) session.required_evidence = Array.from(new Set(update.requiredEvidence));
   if (update.verification) session.verification = update.verification;
   if (update.completion) session.completion = update.completion;
+  if (Array.isArray(update.advisoryContributions)) session.advisory_contributions = update.advisoryContributions;
   if (update.changeProposal) session.change_proposal = update.changeProposal;
   if (Array.isArray(update.interventions)) session.interventions = update.interventions;
   if (update.interventionSummary) session.intervention_summary = update.interventionSummary;

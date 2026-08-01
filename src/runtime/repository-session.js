@@ -20,6 +20,7 @@ const {
   verifyEvidence
 } = require('../model');
 const { RuntimeEventBus } = require('./event-bus');
+const { BuzzAdapter } = require('../integrations/buzz-adapter');
 const {
   createChangeSession,
   updateChangeSession,
@@ -50,6 +51,7 @@ class RepositorySession {
     this.updatedAt = null;
     this.eventBus = new RuntimeEventBus(this.repositoryId);
     this.agentRegistry = new AgentRegistry(this.repositoryId);
+    this.buzzAdapter = new BuzzAdapter({ repositoryId: this.repositoryId, repositoryPath: this.rootDir });
     this.activeChangeSession = null;
     this.changeSessions = new Map();
     this.evidenceState = [];
@@ -107,8 +109,25 @@ class RepositorySession {
 
   startChangeSession(intent) {
     this.activeChangeSession = createChangeSession(intent);
+    const room = this.buzzAdapter.createOrAttachRoom(this.activeChangeSession.id);
+    this.buzzAdapter.upsertParticipant(room.id, {
+      id: 'participant-archie',
+      identity: { type: 'archie', name: 'Archie', provider: 'archie-runtime' },
+      role: 'system-intelligence-advisor',
+      capabilities: ['repository-understanding', 'impact-analysis', 'interventions', 'evidence', 'assurance'],
+      status: 'active'
+    });
+    this.buzzAdapter.upsertParticipant(room.id, {
+      id: 'participant-engineering-owner',
+      identity: { type: 'human', name: 'Engineering Owner' },
+      role: 'engineering-owner',
+      capabilities: ['intent', 'decisions', 'prioritization', 'tradeoffs'],
+      status: 'active'
+    });
+    updateChangeSession(this.activeChangeSession, { changeRoom: room });
     this.changeSessions.set(this.activeChangeSession.id, this.activeChangeSession);
     this.eventBus.publish('change-session.updated', this.activeChangeSession, this.eventContext());
+    this.eventBus.publish('change-room.updated', room, this.eventContext());
     return this.activeChangeSession;
   }
 
@@ -122,6 +141,10 @@ class RepositorySession {
   completeActiveSession() {
     if (!this.activeChangeSession) return null;
     completeChangeSession(this.activeChangeSession);
+    if (this.activeChangeSession.change_room?.id) {
+      const room = this.buzzAdapter.setRoomStatus(this.activeChangeSession.change_room.id, 'completed');
+      updateChangeSession(this.activeChangeSession, { changeRoom: room });
+    }
     this.eventBus.publish('change-session.updated', this.activeChangeSession, this.eventContext());
     return this.activeChangeSession;
   }
@@ -129,6 +152,10 @@ class RepositorySession {
   abandonActiveSession() {
     if (!this.activeChangeSession) return null;
     abandonChangeSession(this.activeChangeSession);
+    if (this.activeChangeSession.change_room?.id) {
+      const room = this.buzzAdapter.setRoomStatus(this.activeChangeSession.change_room.id, 'archived');
+      updateChangeSession(this.activeChangeSession, { changeRoom: room });
+    }
     this.eventBus.publish('change-session.updated', this.activeChangeSession, this.eventContext());
     return this.activeChangeSession;
   }
@@ -254,6 +281,15 @@ class RepositorySession {
       requiredEvidence: proposal.constraints.requiredEvidence,
       changeProposal: proposal
     });
+    this.submitAdvisoryContribution({
+      participantId: this.getParticipantIdForActor(proposal.actor),
+      kind: 'proposal',
+      subject: { type: 'change', id: proposal.id },
+      content: {
+        summary: proposal.intent.summary || 'Proposed a change',
+        structured: { proposal }
+      }
+    });
     this.eventBus.publish('change.proposed', { proposal }, this.eventContext());
     return proposal;
   }
@@ -357,6 +393,28 @@ class RepositorySession {
       this.startChangeSession();
     }
     bindAgentSession(this.activeChangeSession, sessionId);
+    const room = this.getActiveChangeRoom();
+    if (room) {
+      this.buzzAdapter.upsertParticipant(room.id, {
+        id: `participant-${agentSession.agent_id}`,
+        identity: {
+          type: 'coding-agent',
+          name: agentSession.name,
+          provider: 'archie-agent-registry',
+          instanceId: agentSession.session_id
+        },
+        role: 'implementation-advisor',
+        capabilities: agentSession.capabilities,
+        advisoryScope: {
+          repositoryContext: {
+            enabled: true,
+            files: this.activeChangeSession.files
+          }
+        },
+        status: 'active'
+      });
+      updateChangeSession(this.activeChangeSession, { changeRoom: this.buzzAdapter.getRoom(room.id) });
+    }
     return this.activeChangeSession;
   }
 
@@ -366,6 +424,15 @@ class RepositorySession {
     const understood = understandIntent(intentInput, this.model);
     setSessionIntent(session, understood.outcome || intentInput.outcome || '');
     session.intent = { ...session.intent, ...understood };
+    this.submitAdvisoryContribution({
+      participantId: this.getParticipantIdForAgentSession(sessionId),
+      kind: 'observation',
+      subject: { type: 'change', id: session.id },
+      content: {
+        summary: session.intent.description || session.intent.outcome || 'Declared implementation intent',
+        structured: { intent: session.intent }
+      }
+    });
     this.eventBus.publish('agent.intent.declared', { session_id: session.id, intent: session.intent }, this.eventContext());
     return session;
   }
@@ -394,6 +461,15 @@ class RepositorySession {
     const context = this.getAgentContext(sessionId, { detail: planInput.detail || 'focused' });
     const plan = submitPlan(planInput, context);
     addPlan(session, plan);
+    this.submitAdvisoryContribution({
+      participantId: this.getParticipantIdForAgentSession(sessionId),
+      kind: 'proposal',
+      subject: { type: 'plan', id: plan.id },
+      content: {
+        summary: `Submitted implementation plan ${plan.id}`,
+        structured: { plan }
+      }
+    });
     this.eventBus.publish('agent.plan.reviewed', {
       session_id: session.id,
       plan_id: plan.id,
@@ -432,6 +508,15 @@ class RepositorySession {
     if (!session) return null;
     const report = observeImplementation(input, session.files);
     addImplementationReport(session, report);
+    this.submitAdvisoryContribution({
+      participantId: this.getParticipantIdForAgentSession(sessionId),
+      kind: 'implementation-update',
+      subject: { type: 'file' },
+      content: {
+        summary: report.summary || 'Implementation updated',
+        structured: { report }
+      }
+    });
     this.eventBus.publish('agent.change.observed', { session_id: session.id, implementation: report }, this.eventContext());
     return report;
   }
@@ -441,6 +526,15 @@ class RepositorySession {
     if (!session) return null;
     const report = classifyEvidence(input, session.required_evidence || []);
     addEvidenceReport(session, report);
+    this.submitAdvisoryContribution({
+      participantId: this.getParticipantIdForAgentSession(sessionId),
+      kind: 'evidence',
+      subject: { type: 'evidence' },
+      content: {
+        summary: 'Submitted evidence for change session',
+        structured: { classification: report.classification }
+      }
+    });
     this.eventBus.publish('agent.evidence.required', {
       session_id: session.id,
       evidence: report.classification
@@ -466,6 +560,15 @@ class RepositorySession {
     const verification = session.verification || this.verifyAgentChange(sessionId);
     const completion = reviewCompletion({ session, verification });
     updateChangeSession(session, { completion });
+    this.submitAdvisoryContribution({
+      participantId: this.getParticipantIdForAgentSession(sessionId),
+      kind: 'completion-opinion',
+      subject: { type: 'verification' },
+      content: {
+        summary: `Completion assessment: ${completion.result}`,
+        structured: { completion }
+      }
+    });
     const state = completion.result === 'ready_for_review' ? 'completed' : 'review_required';
     if (state === 'completed') completeChangeSession(session);
     else session.status = state;
@@ -509,6 +612,57 @@ class RepositorySession {
       .list(sinceSequence)
       .filter((event) => !event.change_session_id || event.change_session_id === session.id)
       .map((event) => ({ ...event, type: mapEventType(event.type), agent_session_id: session.agent_session_id }));
+  }
+
+  getActiveChangeRoom() {
+    const session = this.activeChangeSession;
+    if (!session) return null;
+    const room = session.change_room?.id ? this.buzzAdapter.getRoom(session.change_room.id) : this.buzzAdapter.getRoomByChangeSessionId(session.id);
+    if (!room) return null;
+    updateChangeSession(session, { changeRoom: room });
+    return room;
+  }
+
+  addChangeRoomParticipant(input = {}) {
+    const room = this.getActiveChangeRoom();
+    if (!room) return null;
+    const participant = this.buzzAdapter.upsertParticipant(room.id, input);
+    updateChangeSession(this.activeChangeSession, { changeRoom: this.buzzAdapter.getRoom(room.id) });
+    this.eventBus.publish('change-room.updated', room, this.eventContext());
+    return participant;
+  }
+
+  submitAdvisoryContribution(input = {}) {
+    const room = this.getActiveChangeRoom();
+    if (!room) return null;
+    const contribution = this.buzzAdapter.publishContribution(room.id, input);
+    if (!contribution) return null;
+    const contributions = this.buzzAdapter.listContributions(room.id);
+    updateChangeSession(this.activeChangeSession, {
+      changeRoom: this.buzzAdapter.getRoom(room.id),
+      advisoryContributions: contributions
+    });
+    this.eventBus.publish('advisory.contribution.published', { contribution }, this.eventContext());
+    return contribution;
+  }
+
+  listAdvisoryContributions(options = {}) {
+    const room = this.getActiveChangeRoom();
+    if (!room) return null;
+    return this.buzzAdapter.listContributions(room.id, options);
+  }
+
+  getParticipantIdForAgentSession(sessionId) {
+    const agentSession = this.getAgentSession(sessionId);
+    if (!agentSession) return null;
+    return `participant-${agentSession.agent_id}`;
+  }
+
+  getParticipantIdForActor(actor = {}) {
+    if (actor.type === 'agent' && actor.id) return `participant-${actor.id}`;
+    if (actor.type === 'human') return 'participant-engineering-owner';
+    if (actor.type === 'archie') return 'participant-archie';
+    return 'participant-archie';
   }
 
   getStatus() {
