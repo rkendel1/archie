@@ -40,7 +40,20 @@ const {
 } = require('./evidence-state');
 const { computeGraphDelta } = require('./graph-updater');
 const { analyzeChange } = require('./incremental-analyzer');
-const { ControlPlaneState, runControlPlane } = require('../control-plane');
+const {
+  ControlPlaneState,
+  runControlPlane,
+  evaluateChangeTransition,
+  evaluateCompletionDecision
+} = require('../control-plane');
+const { CONTROL_PLANE_EVENTS } = require('../control-plane/events/event-types');
+const { publishControlPlaneEvents } = require('../control-plane/events/publisher');
+const { acknowledgeIntervention } = require('../control-plane/interventions/acknowledgement');
+const { resolveIntervention, waiveIntervention } = require('../control-plane/interventions/resolution');
+const { escalateIntervention } = require('../control-plane/interventions/escalation');
+const { acknowledgeContext } = require('../control-plane/context/acknowledgements');
+const { refreshParticipantContext } = require('../control-plane/context/refresh');
+const { resolveCoordinationAction } = require('../control-plane/coordination/conflict-resolution');
 
 class RepositorySession {
   constructor(rootDir) {
@@ -398,9 +411,16 @@ class RepositorySession {
         decisions: this.model.userDecisions
       } : {},
       state: this.controlPlaneState,
-      repositoryRevision: String(this.modelVersion || 0)
+      repositoryRevision: String(this.modelVersion || 0),
+      previousRevision: String(this.previousVersion || 0)
     });
+    this.controlPlaneState.setPolicyEvaluations(this.controlPlane.policy?.evaluations || []);
+    this.controlPlaneState.setInterventions(this.controlPlane.interventions || []);
+    this.controlPlaneState.setRequirements(this.controlPlane.requirements || []);
+    this.controlPlaneState.setCoordinationActions(this.controlPlane.coordinationActions || []);
+    this.controlPlaneState.setParticipantContexts(this.controlPlane.context?.participantSnapshots || []);
     this.controlPlaneState.setSnapshot(this.controlPlane);
+    this.publishControlPlaneDerivedEvents(this.controlPlane);
     return this.controlPlane;
   }
 
@@ -759,6 +779,230 @@ class RepositorySession {
     };
   }
 
+  getActiveControlPlaneState() {
+    return this.getControlPlaneSnapshot().activeEngineeringState || null;
+  }
+
+  listPolicies() {
+    return (this.getControlPlaneSnapshot().policy?.policies || []).map((policy) => ({
+      id: policy.id,
+      name: policy.name,
+      description: policy.description,
+      domain: policy.domain,
+      priority: policy.priority
+    }));
+  }
+
+  getPolicy(policyId) {
+    return this.listPolicies().find((entry) => entry.id === policyId) || null;
+  }
+
+  listPolicyEvaluations() {
+    return this.controlPlaneState.policyEvaluations || [];
+  }
+
+  listInterventions() {
+    return this.controlPlaneState.interventions || [];
+  }
+
+  getIntervention(id) {
+    return this.listInterventions().find((entry) => entry.id === id) || null;
+  }
+
+  acknowledgeIntervention(id, input = {}) {
+    const intervention = this.getIntervention(id);
+    if (!intervention) return null;
+    acknowledgeIntervention(intervention, input.actor || 'participant');
+    this.refreshControlPlane();
+    this.eventBus.publish(CONTROL_PLANE_EVENTS.INTERVENTION_ACKNOWLEDGED, { intervention }, this.eventContext());
+    return intervention;
+  }
+
+  resolveIntervention(id, input = {}) {
+    const intervention = this.getIntervention(id);
+    if (!intervention) return null;
+    resolveIntervention(intervention, input);
+    this.refreshControlPlane();
+    this.eventBus.publish(CONTROL_PLANE_EVENTS.INTERVENTION_RESOLVED, { intervention }, this.eventContext());
+    return intervention;
+  }
+
+  waiveIntervention(id, input = {}) {
+    const intervention = this.getIntervention(id);
+    if (!intervention) return null;
+    waiveIntervention(intervention, input);
+    this.refreshControlPlane();
+    this.eventBus.publish(CONTROL_PLANE_EVENTS.INTERVENTION_WAIVED, { intervention }, this.eventContext());
+    return intervention;
+  }
+
+  escalateIntervention(id, input = {}) {
+    const intervention = this.getIntervention(id);
+    if (!intervention) return null;
+    escalateIntervention(intervention, input);
+    this.refreshControlPlane();
+    this.eventBus.publish(CONTROL_PLANE_EVENTS.INTERVENTION_ESCALATED, { intervention }, this.eventContext());
+    return intervention;
+  }
+
+  listRequirements() {
+    return this.controlPlaneState.requirements || [];
+  }
+
+  getRequirement(id) {
+    return this.listRequirements().find((entry) => entry.id === id) || null;
+  }
+
+  satisfyRequirement(id, input = {}) {
+    const requirement = this.getRequirement(id);
+    if (!requirement) return null;
+    requirement.status = input.status || 'satisfied';
+    requirement.satisfiedAt = new Date().toISOString();
+    this.refreshControlPlane();
+    this.eventBus.publish(CONTROL_PLANE_EVENTS.REQUIREMENT_UPDATED, { requirement }, this.eventContext());
+    return requirement;
+  }
+
+  listCoordinationActions() {
+    return this.controlPlaneState.coordinationActions || [];
+  }
+
+  createCoordinationAction(input = {}) {
+    const action = {
+      id: input.id || `coord_manual_${Date.now()}`,
+      changeId: input.changeId || this.activeChangeSession?.id || null,
+      conflictId: input.conflictId || null,
+      participants: input.participants || [],
+      options: input.options || [],
+      status: 'open',
+      selectedOption: null,
+      createdAt: new Date().toISOString()
+    };
+    this.controlPlaneState.coordinationActions = [...this.listCoordinationActions(), action];
+    this.refreshControlPlane();
+    this.eventBus.publish(CONTROL_PLANE_EVENTS.COORDINATION_REQUIRED, { action }, this.eventContext());
+    return action;
+  }
+
+  resolveCoordinationAction(id, input = {}) {
+    const actions = this.listCoordinationActions();
+    const action = actions.find((entry) => entry.id === id);
+    if (!action) return null;
+    const resolved = resolveCoordinationAction(action, input);
+    this.controlPlaneState.coordinationActions = actions.map((entry) => (entry.id === id ? resolved : entry));
+    this.refreshControlPlane();
+    this.eventBus.publish(CONTROL_PLANE_EVENTS.COORDINATION_RESOLVED, { action: resolved }, this.eventContext());
+    return resolved;
+  }
+
+  escalateCoordinationAction(id, input = {}) {
+    const actions = this.listCoordinationActions();
+    const action = actions.find((entry) => entry.id === id);
+    if (!action) return null;
+    action.status = 'escalated';
+    action.escalatedAt = new Date().toISOString();
+    action.escalationReason = input.reason || 'Escalated to human decision';
+    this.controlPlaneState.coordinationActions = actions;
+    this.refreshControlPlane();
+    this.eventBus.publish(CONTROL_PLANE_EVENTS.COORDINATION_REQUIRED, { action }, this.eventContext());
+    return action;
+  }
+
+  listParticipantContexts() {
+    return this.controlPlaneState.participantContexts || [];
+  }
+
+  getParticipantContext(participantId) {
+    return this.listParticipantContexts().find((entry) => entry.participantId === participantId) || null;
+  }
+
+  refreshParticipantContext(participantId) {
+    const contexts = this.listParticipantContexts();
+    const existing = contexts.find((entry) => entry.participantId === participantId);
+    if (!existing) return null;
+    const refreshed = refreshParticipantContext(existing);
+    this.controlPlaneState.participantContexts = contexts.map((entry) => (entry.participantId === participantId ? refreshed : entry));
+    this.refreshControlPlane();
+    this.eventBus.publish(CONTROL_PLANE_EVENTS.CONTEXT_REFRESHED, { context: refreshed }, this.eventContext());
+    return refreshed;
+  }
+
+  acknowledgeParticipantContext(participantId, input = {}) {
+    const contexts = this.listParticipantContexts();
+    const existing = contexts.find((entry) => entry.participantId === participantId);
+    if (!existing) return null;
+    const acknowledged = acknowledgeContext(existing, input.actor || participantId);
+    this.controlPlaneState.participantContexts = contexts.map((entry) => (entry.participantId === participantId ? acknowledged : entry));
+    this.refreshControlPlane();
+    this.eventBus.publish(CONTROL_PLANE_EVENTS.CONTEXT_REFRESH_REQUIRED, { context: acknowledged }, this.eventContext());
+    return acknowledged;
+  }
+
+  evaluateTransition(transition = 'plan') {
+    const snapshot = this.getControlPlaneSnapshot();
+    const result = evaluateChangeTransition({
+      transition,
+      requirements: snapshot.requirements || [],
+      interventions: snapshot.interventions || []
+    });
+    this.eventBus.publish(CONTROL_PLANE_EVENTS.TRANSITION_EVALUATED, { transition, result }, this.eventContext());
+    return result;
+  }
+
+  applyTransition(changeId, transition = 'plan') {
+    const result = this.evaluateTransition(transition);
+    if (!result.allowed) return { accepted: false, transition, evaluation: result, changeId };
+    if (this.activeChangeSession && (!changeId || this.activeChangeSession.id === changeId)) {
+      this.activeChangeSession.status = mapTransitionToStatus(transition, this.activeChangeSession.status);
+    }
+    return { accepted: true, transition, evaluation: result, changeId: changeId || this.activeChangeSession?.id || null };
+  }
+
+  getCompletionReadiness(changeId = null) {
+    const readiness = this.getControlPlaneSnapshot().completionReadiness || null;
+    return {
+      changeId: changeId || this.activeChangeSession?.id || null,
+      ...(readiness || {})
+    };
+  }
+
+  completeChange(changeId = null, input = {}) {
+    const readiness = this.getCompletionReadiness(changeId);
+    const decision = evaluateCompletionDecision(readiness, input);
+    this.controlPlaneState.addCompletionAttempt({ ...decision, changeId: readiness.changeId, attemptedAt: new Date().toISOString() });
+    this.eventBus.publish(CONTROL_PLANE_EVENTS.COMPLETION_EVALUATED, { decision }, this.eventContext());
+    if (decision.accepted && this.activeChangeSession && this.activeChangeSession.id === readiness.changeId) {
+      this.activeChangeSession.status = 'completed';
+    }
+    return { changeId: readiness.changeId, ...decision };
+  }
+
+  publishControlPlaneDerivedEvents(snapshot = {}) {
+    const events = [];
+    for (const evaluation of snapshot.policy?.evaluations || []) {
+      events.push({ type: CONTROL_PLANE_EVENTS.POLICY_EVALUATED, payload: { evaluation } });
+      if (evaluation.status === 'violated') {
+        events.push({ type: CONTROL_PLANE_EVENTS.POLICY_VIOLATED, payload: { evaluation } });
+      }
+    }
+    for (const requirement of snapshot.requirements || []) {
+      events.push({ type: CONTROL_PLANE_EVENTS.REQUIREMENT_CREATED, payload: { requirement } });
+    }
+    for (const intervention of snapshot.interventions || []) {
+      events.push({ type: CONTROL_PLANE_EVENTS.INTERVENTION_CREATED, payload: { intervention } });
+    }
+    for (const invalidation of snapshot.context?.invalidations || []) {
+      events.push({ type: CONTROL_PLANE_EVENTS.CONTEXT_INVALIDATED, payload: invalidation });
+    }
+    for (const action of snapshot.coordinationActions || []) {
+      events.push({ type: CONTROL_PLANE_EVENTS.COORDINATION_REQUIRED, payload: { action } });
+    }
+    if (snapshot.activeEngineeringState?.reviewState?.requiresHumanDecision) {
+      events.push({ type: CONTROL_PLANE_EVENTS.REVIEW_REQUIRED, payload: { changeId: snapshot.activeEngineeringState.changeId } });
+    }
+    publishControlPlaneEvents(this.eventBus, events.slice(0, 50), this.eventContext());
+  }
+
   snapshot() {
     return {
       repository_id: this.repositoryId,
@@ -803,4 +1047,16 @@ function buildImplementationOrder(impact, proposal) {
   order.push('Add contract and integration evidence');
   order.push('Run final verification for affected capabilities');
   return order;
+}
+
+function mapTransitionToStatus(transition, currentStatus = 'active') {
+  const mapping = {
+    start: 'active',
+    plan: 'planning',
+    implement: 'implementing',
+    verify: 'verifying',
+    review: 'reviewing',
+    complete: 'completed'
+  };
+  return mapping[transition] || currentStatus;
 }

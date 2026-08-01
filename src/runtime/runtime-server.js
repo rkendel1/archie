@@ -244,6 +244,31 @@ class RuntimeServer {
         });
       }
 
+      if (req.method === 'GET' && url.pathname === '/v1/control-plane/active-state') {
+        return sendJson(res, 200, {
+          active_state: this.repositorySession.getActiveControlPlaneState()
+        });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/control-plane/policies') {
+        return sendJson(res, 200, {
+          policies: this.repositorySession.listPolicies()
+        });
+      }
+
+      if (req.method === 'GET' && /^\/v1\/control-plane\/policies\/[^/]+$/.test(url.pathname)) {
+        const policyId = url.pathname.split('/')[4];
+        const policy = this.repositorySession.getPolicy(policyId);
+        if (!policy) return sendJson(res, 404, { error: 'Policy not found' });
+        return sendJson(res, 200, { policy });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/control-plane/evaluations') {
+        return sendJson(res, 200, {
+          evaluations: this.repositorySession.listPolicyEvaluations()
+        });
+      }
+
       if (req.method === 'GET' && url.pathname === '/v1/control-plane/review-queue') {
         return sendJson(res, 200, {
           review_queue: this.repositorySession.getControlPlaneSnapshot().reviewQueue
@@ -266,6 +291,135 @@ class RuntimeServer {
         const body = await parseBody(req);
         const decision = this.repositorySession.createDecision(body);
         return sendJson(res, 201, { decision });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/control-plane/interventions') {
+        return sendJson(res, 200, {
+          interventions: this.repositorySession.listInterventions()
+        });
+      }
+
+      if (req.method === 'GET' && /^\/v1\/control-plane\/interventions\/[^/]+$/.test(url.pathname)) {
+        const id = url.pathname.split('/')[4];
+        const intervention = this.repositorySession.getIntervention(id);
+        if (!intervention) return sendJson(res, 404, { error: 'Intervention not found' });
+        return sendJson(res, 200, { intervention });
+      }
+
+      if (req.method === 'POST' && /^\/v1\/control-plane\/interventions\/[^/]+\/acknowledge$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const id = url.pathname.split('/')[4];
+        const intervention = this.repositorySession.acknowledgeIntervention(id, body);
+        if (!intervention) return sendJson(res, 404, { error: 'Intervention not found' });
+        return sendJson(res, 200, { intervention });
+      }
+
+      if (req.method === 'POST' && /^\/v1\/control-plane\/interventions\/[^/]+\/resolve$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const id = url.pathname.split('/')[4];
+        const intervention = this.repositorySession.resolveIntervention(id, body);
+        if (!intervention) return sendJson(res, 404, { error: 'Intervention not found' });
+        return sendJson(res, 200, { intervention });
+      }
+
+      if (req.method === 'POST' && /^\/v1\/control-plane\/interventions\/[^/]+\/waive$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const id = url.pathname.split('/')[4];
+        const intervention = this.repositorySession.waiveIntervention(id, body);
+        if (!intervention) return sendJson(res, 404, { error: 'Intervention not found' });
+        return sendJson(res, 200, { intervention });
+      }
+
+      if (req.method === 'POST' && /^\/v1\/control-plane\/interventions\/[^/]+\/escalate$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const id = url.pathname.split('/')[4];
+        const intervention = this.repositorySession.escalateIntervention(id, body);
+        if (!intervention) return sendJson(res, 404, { error: 'Intervention not found' });
+        return sendJson(res, 200, { intervention });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/control-plane/requirements') {
+        return sendJson(res, 200, {
+          requirements: this.repositorySession.listRequirements()
+        });
+      }
+
+      if (req.method === 'GET' && /^\/v1\/control-plane\/requirements\/[^/]+$/.test(url.pathname)) {
+        const id = url.pathname.split('/')[4];
+        const requirement = this.repositorySession.getRequirement(id);
+        if (!requirement) return sendJson(res, 404, { error: 'Requirement not found' });
+        return sendJson(res, 200, { requirement });
+      }
+
+      if (req.method === 'POST' && /^\/v1\/control-plane\/requirements\/[^/]+\/satisfy$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const id = url.pathname.split('/')[4];
+        const requirement = this.repositorySession.satisfyRequirement(id, body);
+        if (!requirement) return sendJson(res, 404, { error: 'Requirement not found' });
+        return sendJson(res, 200, { requirement });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/control-plane/coordination') {
+        return sendJson(res, 200, {
+          coordination: this.repositorySession.getControlPlaneSnapshot().coordination,
+          actions: this.repositorySession.listCoordinationActions()
+        });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/control-plane/coordination/actions') {
+        return sendJson(res, 200, {
+          actions: this.repositorySession.listCoordinationActions()
+        });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/control-plane/coordination/actions') {
+        const body = await parseBody(req);
+        const action = this.repositorySession.createCoordinationAction(body);
+        return sendJson(res, 201, { action });
+      }
+
+      if (req.method === 'POST' && /^\/v1\/control-plane\/coordination\/actions\/[^/]+\/resolve$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const id = url.pathname.split('/')[5];
+        const action = this.repositorySession.resolveCoordinationAction(id, body);
+        if (!action) return sendJson(res, 404, { error: 'Coordination action not found' });
+        return sendJson(res, 200, { action });
+      }
+
+      if (req.method === 'POST' && /^\/v1\/control-plane\/coordination\/actions\/[^/]+\/escalate$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const id = url.pathname.split('/')[5];
+        const action = this.repositorySession.escalateCoordinationAction(id, body);
+        if (!action) return sendJson(res, 404, { error: 'Coordination action not found' });
+        return sendJson(res, 200, { action });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/control-plane/context') {
+        return sendJson(res, 200, {
+          contexts: this.repositorySession.listParticipantContexts()
+        });
+      }
+
+      if (req.method === 'GET' && /^\/v1\/control-plane\/context\/[^/]+$/.test(url.pathname)) {
+        const participantId = url.pathname.split('/')[4];
+        const context = this.repositorySession.getParticipantContext(participantId);
+        if (!context) return sendJson(res, 404, { error: 'Participant context not found' });
+        return sendJson(res, 200, context);
+      }
+
+      if (req.method === 'POST' && /^\/v1\/control-plane\/context\/[^/]+\/refresh$/.test(url.pathname)) {
+        const participantId = url.pathname.split('/')[4];
+        const context = this.repositorySession.refreshParticipantContext(participantId);
+        if (!context) return sendJson(res, 404, { error: 'Participant context not found' });
+        return sendJson(res, 200, context);
+      }
+
+      if (req.method === 'POST' && /^\/v1\/control-plane\/context\/[^/]+\/acknowledge$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const participantId = url.pathname.split('/')[4];
+        const context = this.repositorySession.acknowledgeParticipantContext(participantId, body);
+        if (!context) return sendJson(res, 404, { error: 'Participant context not found' });
+        return sendJson(res, 200, context);
       }
 
       if (req.method === 'GET' && url.pathname === '/v1/status') {
@@ -432,11 +586,85 @@ class RuntimeServer {
         return sendJson(res, 200, { events });
       }
 
+      if (req.method === 'GET' && url.pathname === '/v1/agent/context') {
+        const participantId = url.searchParams.get('participantId');
+        if (!participantId) return sendJson(res, 400, { error: 'participantId is required' });
+        const context = this.repositorySession.getParticipantContext(participantId);
+        if (!context) return sendJson(res, 404, { error: 'Participant context not found' });
+        return sendJson(res, 200, context);
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/agent/context/status') {
+        const participantId = url.searchParams.get('participantId');
+        if (!participantId) return sendJson(res, 400, { error: 'participantId is required' });
+        const context = this.repositorySession.getParticipantContext(participantId);
+        if (!context) return sendJson(res, 404, { error: 'Participant context not found' });
+        return sendJson(res, 200, {
+          participantId: context.participantId,
+          changeId: context.changeId,
+          contextRevision: context.contextRevision,
+          status: context.status,
+          invalidated: context.invalidated,
+          requiredBefore: context.requiredBefore
+        });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/agent/context/acknowledge') {
+        const body = await parseBody(req);
+        if (!body.participantId) return sendJson(res, 400, { error: 'participantId is required' });
+        const context = this.repositorySession.acknowledgeParticipantContext(body.participantId, body);
+        if (!context) return sendJson(res, 404, { error: 'Participant context not found' });
+        return sendJson(res, 200, context);
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/agent/context/refresh') {
+        const body = await parseBody(req);
+        if (!body.participantId) return sendJson(res, 400, { error: 'participantId is required' });
+        const context = this.repositorySession.refreshParticipantContext(body.participantId);
+        if (!context) return sendJson(res, 404, { error: 'Participant context not found' });
+        return sendJson(res, 200, context);
+      }
+
       if (req.method === 'GET' && /^\/v1\/context\/changes\/[^/]+$/.test(url.pathname)) {
         const changeId = url.pathname.split('/')[4];
         const context = this.repositorySession.getChangeContext(changeId);
         if (!context) return sendJson(res, 404, { error: 'Change context not found' });
         return sendJson(res, 200, context);
+      }
+
+      if (req.method === 'POST' && /^\/v1\/changes\/[^/]+\/transitions\/evaluate$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const changeId = url.pathname.split('/')[3];
+        const transition = body.transition || 'plan';
+        const evaluation = this.repositorySession.evaluateTransition(transition);
+        return sendJson(res, 200, { changeId, transition, ...evaluation });
+      }
+
+      if (req.method === 'POST' && /^\/v1\/changes\/[^/]+\/transitions$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const changeId = url.pathname.split('/')[3];
+        const transition = body.transition || 'plan';
+        const result = this.repositorySession.applyTransition(changeId, transition);
+        return sendJson(res, result.accepted ? 200 : 409, result);
+      }
+
+      if (req.method === 'GET' && /^\/v1\/changes\/[^/]+\/completion-readiness$/.test(url.pathname)) {
+        const changeId = url.pathname.split('/')[3];
+        return sendJson(res, 200, this.repositorySession.getCompletionReadiness(changeId));
+      }
+
+      if (req.method === 'POST' && /^\/v1\/changes\/[^/]+\/complete$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const changeId = url.pathname.split('/')[3];
+        const completion = this.repositorySession.completeChange(changeId, body);
+        return sendJson(res, completion.accepted ? 200 : 409, completion);
+      }
+
+      if (req.method === 'POST' && /^\/v1\/changes\/[^/]+\/complete\/accept-risk$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const changeId = url.pathname.split('/')[3];
+        const completion = this.repositorySession.completeChange(changeId, { ...body, acceptRisk: true });
+        return sendJson(res, completion.accepted ? 200 : 409, completion);
       }
 
       if (req.method === 'POST' && url.pathname === '/v1/sessions/complete') {

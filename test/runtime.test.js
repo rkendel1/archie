@@ -201,6 +201,69 @@ test('runtime server supports agent participation workflow', async () => {
   assert.ok(Array.isArray(controlPlane.control_plane.coordination.claims));
   assert.ok(controlPlane.control_plane.coordination.conflicts.some((entry) => entry.type === 'WORK_CONFLICT'));
   assert.ok(controlPlane.control_plane.decisions.some((entry) => entry.id === decision.decision.id));
+  assert.equal(typeof controlPlane.control_plane.activeEngineeringState.status, 'string');
+  assert.ok(Array.isArray(controlPlane.control_plane.policy.evaluations));
+
+  const activeState = await request(server.baseUrl, 'GET', '/v1/control-plane/active-state');
+  assert.equal(typeof activeState.active_state.status, 'string');
+
+  const policies = await request(server.baseUrl, 'GET', '/v1/control-plane/policies');
+  assert.ok(policies.policies.some((entry) => entry.id === 'overlapping-work'));
+
+  const policyDetails = await request(server.baseUrl, 'GET', '/v1/control-plane/policies/overlapping-work');
+  assert.equal(policyDetails.policy.id, 'overlapping-work');
+
+  const evaluations = await request(server.baseUrl, 'GET', '/v1/control-plane/evaluations');
+  assert.ok(Array.isArray(evaluations.evaluations));
+
+  const requirements = await request(server.baseUrl, 'GET', '/v1/control-plane/requirements');
+  assert.ok(Array.isArray(requirements.requirements));
+  if (requirements.requirements.length) {
+    const requirementId = requirements.requirements[0].id;
+    const requirement = await request(server.baseUrl, 'GET', `/v1/control-plane/requirements/${requirementId}`);
+    assert.equal(requirement.requirement.id, requirementId);
+    const satisfied = await request(server.baseUrl, 'POST', `/v1/control-plane/requirements/${requirementId}/satisfy`, { status: 'satisfied' });
+    assert.equal(satisfied.requirement.id, requirementId);
+  }
+
+  const interventions = await request(server.baseUrl, 'GET', '/v1/control-plane/interventions');
+  assert.ok(Array.isArray(interventions.interventions));
+  if (interventions.interventions.length) {
+    const interventionId = interventions.interventions[0].id;
+    const acked = await request(server.baseUrl, 'POST', `/v1/control-plane/interventions/${interventionId}/acknowledge`, { actor: 'coding-agent-01' });
+    assert.equal(acked.intervention.id, interventionId);
+  }
+
+  const coordinationActions = await request(server.baseUrl, 'GET', '/v1/control-plane/coordination/actions');
+  assert.ok(Array.isArray(coordinationActions.actions));
+  if (coordinationActions.actions.length) {
+    const actionId = coordinationActions.actions[0].id;
+    const resolved = await request(server.baseUrl, 'POST', `/v1/control-plane/coordination/actions/${actionId}/resolve`, {
+      selectedOption: 'assign-ownership',
+      reason: 'Split implementation and review roles'
+    });
+    assert.equal(resolved.action.id, actionId);
+  }
+
+  const participantId = room.room.participants.find((entry) => entry.role === 'implementation-advisor')?.id;
+  assert.ok(participantId);
+  const participantContext = await request(server.baseUrl, 'GET', `/v1/control-plane/context/${participantId}`);
+  assert.equal(participantContext.participantId, participantId);
+
+  const contextStatus = await request(server.baseUrl, 'GET', `/v1/agent/context/status?participantId=${participantId}`);
+  assert.equal(contextStatus.participantId, participantId);
+
+  const contextAck = await request(server.baseUrl, 'POST', '/v1/agent/context/acknowledge', { participantId });
+  assert.equal(contextAck.participantId, participantId);
+
+  const transitionEvaluation = await request(server.baseUrl, 'POST', `/v1/changes/${proposal.proposal.id}/transitions/evaluate`, { transition: 'complete' });
+  assert.equal(typeof transitionEvaluation.allowed, 'boolean');
+
+  const completionReadiness = await request(server.baseUrl, 'GET', `/v1/changes/${proposal.proposal.id}/completion-readiness`);
+  assert.ok(['ready', 'not-ready', 'blocked', 'uncertain'].includes(completionReadiness.status));
+
+  const completionDecision = await request(server.baseUrl, 'POST', `/v1/changes/${proposal.proposal.id}/complete`);
+  assert.equal(typeof completionDecision.accepted, 'boolean');
 
   const reviewQueue = await request(server.baseUrl, 'GET', '/v1/control-plane/review-queue');
   assert.equal(typeof reviewQueue.review_queue.summary.requiresDecision, 'number');
