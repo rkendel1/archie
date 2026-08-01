@@ -1,0 +1,3 @@
+#!/usr/bin/env node
+const { command } = require('../src/cli');
+command(process.argv.slice(2));
