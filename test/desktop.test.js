@@ -62,6 +62,7 @@ test('desktop command center supports project workspaces and room collaboration'
 
   const workspace = await request(baseUrl, 'GET', `/api/projects/${opened.project.id}/workspace`);
   assert.ok(workspace.navigation.changes >= 1);
+  assert.equal(typeof workspace.navigation.reviewQueue, 'number');
   assert.ok(workspace.sections.activeRoom);
   assert.ok(Array.isArray(workspace.sections.nextImplementations));
 
@@ -92,6 +93,9 @@ test('desktop command center supports project workspaces and room collaboration'
 
   const recommendations = await request(baseUrl, 'GET', `/api/projects/${opened.project.id}/next-implementations`);
   assert.equal(recommendations.recommendations.length, 3);
+
+  const reviewQueue = await request(baseUrl, 'GET', `/api/projects/${opened.project.id}/review-queue`);
+  assert.equal(typeof reviewQueue.reviewQueue.summary.requiresDecision, 'number');
 
   await closeServer(server);
 

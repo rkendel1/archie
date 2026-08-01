@@ -11,6 +11,15 @@ Archie change sessions now run inside persistent Buzz-style change rooms where p
 - Participants: `GET|POST /v1/changes/active/participants`
 - Advisory contributions: `GET|POST /v1/changes/active/contributions`
 
+## PR8 control plane APIs
+
+The runtime now exposes control-plane endpoints for system truth, coordination, and assurance:
+
+- `GET /v1/control-plane`
+- `GET /v1/control-plane/review-queue`
+- `GET|POST /v1/control-plane/work-claims`
+- `POST /v1/control-plane/decisions`
+
 ## Product promise
 
 Connect your repository and get a living model of how the system works. As AI and developers change the code, the model updates, explains impact, detects architectural drift, identifies missing evidence, and enforces contracts locally and in CI.
