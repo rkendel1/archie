@@ -32,6 +32,16 @@ function createChangeSession(intent) {
       score: 0,
       status: 'in_progress'
     },
+    agent_session_id: null,
+    declared_files: [],
+    unexpected_files: [],
+    plans: [],
+    implementation_reports: [],
+    evidence_reports: [],
+    required_evidence: [],
+    verification: null,
+    completion: null,
+    constraints: [],
     started_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     completed_at: null
@@ -46,12 +56,47 @@ function updateChangeSession(session, update = {}) {
   if (update.systemImpact) session.system_impact = update.systemImpact;
   if (update.evidence) session.evidence = update.evidence;
   if (update.assurance) session.assurance = update.assurance;
+  if (Array.isArray(update.declaredFiles)) session.declared_files = Array.from(new Set(update.declaredFiles)).sort();
+  if (Array.isArray(update.unexpectedFiles)) session.unexpected_files = Array.from(new Set(update.unexpectedFiles)).sort();
+  if (Array.isArray(update.constraints)) session.constraints = update.constraints;
+  if (Array.isArray(update.requiredEvidence)) session.required_evidence = Array.from(new Set(update.requiredEvidence));
+  if (update.verification) session.verification = update.verification;
+  if (update.completion) session.completion = update.completion;
   session.updated_at = new Date().toISOString();
   return session;
 }
 
 function setSessionIntent(session, intent) {
   session.intent = makeIntent(intent);
+  if (session.intent.status === 'explicit') session.intent.status = 'declared';
+  session.updated_at = new Date().toISOString();
+  return session;
+}
+
+function bindAgentSession(session, agentSessionId) {
+  session.agent_session_id = agentSessionId || null;
+  session.updated_at = new Date().toISOString();
+  return session;
+}
+
+function addPlan(session, plan) {
+  session.plans.push(plan);
+  session.updated_at = new Date().toISOString();
+  return session;
+}
+
+function getPlan(session, planId) {
+  return session.plans.find((plan) => plan.id === planId) || null;
+}
+
+function addImplementationReport(session, report) {
+  session.implementation_reports.push(report);
+  session.updated_at = new Date().toISOString();
+  return session;
+}
+
+function addEvidenceReport(session, report) {
+  session.evidence_reports.push(report);
   session.updated_at = new Date().toISOString();
   return session;
 }
@@ -76,6 +121,11 @@ module.exports = {
   createChangeSession,
   updateChangeSession,
   setSessionIntent,
+  bindAgentSession,
+  addPlan,
+  getPlan,
+  addImplementationReport,
+  addEvidenceReport,
   completeChangeSession,
   abandonChangeSession
 };

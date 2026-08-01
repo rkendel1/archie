@@ -83,3 +83,69 @@ test('runtime server tracks model versions, sessions, and events', async () => {
 
   await new Promise((resolve) => setTimeout(resolve, 30));
 });
+
+test('runtime server supports agent participation workflow', async () => {
+  const repo = makeRepo();
+  const server = await startRuntimeServer(repo, { port: 0 });
+
+  const protocol = await request(server.baseUrl, 'GET', '/v1/agent/protocol');
+  assert.equal(protocol.protocol_version, '1.0');
+
+  const agent = await request(server.baseUrl, 'POST', '/v1/agent/sessions', {
+    id: 'coding-agent-01',
+    name: 'Local Coding Agent',
+    capabilities: ['read', 'write', 'plan', 'verify']
+  });
+  assert.equal(agent.agent_id, 'coding-agent-01');
+
+  const intent = await request(server.baseUrl, 'POST', `/v1/agent/sessions/${agent.session_id}/intent`, {
+    intent: {
+      outcome: 'Add dataset insight capabilities',
+      constraints: [{ type: 'architecture', value: 'Reuse existing Worker Runtime' }]
+    }
+  });
+  assert.equal(intent.agent_session_id, agent.session_id);
+  assert.equal(intent.intent.status, 'understood');
+
+  const context = await request(server.baseUrl, 'GET', `/v1/agent/sessions/${agent.session_id}/context?detail=focused`);
+  assert.ok(Array.isArray(context.constraints));
+  assert.ok(Array.isArray(context.required_evidence));
+
+  const plan = await request(server.baseUrl, 'POST', `/v1/agent/sessions/${agent.session_id}/plans`, {
+    steps: [{ action: 'add_capability', target: 'dataset-insight' }],
+    files: ['src/runtime/runtime-manifest.ts']
+  });
+  assert.ok(plan.id.startsWith('plan_'));
+  assert.equal(typeof plan.review.plan_assurance, 'number');
+
+  const plans = await request(server.baseUrl, 'GET', `/v1/agent/sessions/${agent.session_id}/plans`);
+  assert.ok(plans.plans.length >= 1);
+
+  const declaration = await request(server.baseUrl, 'POST', `/v1/agent/sessions/${agent.session_id}/files`, {
+    files: ['src/runtime/runtime-manifest.ts']
+  });
+  assert.deepEqual(declaration.declared_files, ['src/runtime/runtime-manifest.ts']);
+
+  const implementation = await request(server.baseUrl, 'POST', `/v1/agent/sessions/${agent.session_id}/implementation`, {
+    summary: 'Updated runtime manifest',
+    changes: [{ file: 'src/runtime/runtime-manifest.ts', action: 'modified' }]
+  });
+  assert.equal(implementation.status, 'implemented');
+
+  const evidence = await request(server.baseUrl, 'POST', `/v1/agent/sessions/${agent.session_id}/evidence`, {
+    evidence: [{ type: 'runtime-registration', result: 'passed', command: 'npm test -- runtime' }]
+  });
+  assert.equal(evidence.classification.verified, 1);
+
+  const verify = await request(server.baseUrl, 'POST', `/v1/agent/sessions/${agent.session_id}/verify`);
+  assert.equal(typeof verify.ok, 'boolean');
+
+  const completion = await request(server.baseUrl, 'POST', `/v1/agent/sessions/${agent.session_id}/complete`);
+  assert.ok(['ready_for_review', 'review_required'].includes(completion.result));
+
+  const events = await request(server.baseUrl, 'GET', `/v1/agent/sessions/${agent.session_id}/events`);
+  assert.ok(events.events.some((event) => event.type.startsWith('agent.')));
+
+  await request(server.baseUrl, 'POST', '/v1/runtime/stop');
+  await new Promise((resolve) => setTimeout(resolve, 30));
+});

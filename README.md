@@ -23,6 +23,15 @@ Commands:
 - `participant serve`
 - `participant status --live`
 - `participant session start --intent "..."`
+- `participant agent discover`
+- `participant agent register --id coding-agent-01 --name "Local Coding Agent" --capabilities read,write,plan,verify`
+- `participant agent context --session <agent_session_id> --intent "..." --detail focused --format markdown`
+- `participant agent plan submit --session <agent_session_id> --file plan.json`
+- `participant agent files declare --session <agent_session_id> --files src/a.ts,src/b.ts`
+- `participant agent implementation report --session <agent_session_id> --file implementation.json`
+- `participant agent evidence submit --session <agent_session_id> --file evidence.json`
+- `participant agent verify --session <agent_session_id>`
+- `participant agent complete --session <agent_session_id>`
 - `participant check architecture|contracts|capabilities`
 - `participant impact`
 - `participant verify --changed`

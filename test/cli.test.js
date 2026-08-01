@@ -70,6 +70,40 @@ test('participant session and live status commands work with runtime server', as
   const complete = execFileSync('node', [bin, 'session', 'complete', '--port', port], { encoding: 'utf8' });
   assert.ok(complete.includes('"status": "completed"'));
 
+  const discover = execFileSync('node', [bin, 'agent', 'discover', '--port', port], { encoding: 'utf8' });
+  assert.ok(discover.includes('ARCHIE AGENT PARTICIPATION'));
+
+  const register = execFileSync('node', [
+    bin,
+    'agent',
+    'register',
+    '--port',
+    port,
+    '--id',
+    'coding-agent-01',
+    '--name',
+    'Local Coding Agent',
+    '--capabilities',
+    'read,write,plan,verify'
+  ], { encoding: 'utf8' });
+  assert.ok(register.includes('"agent_id": "coding-agent-01"'));
+
+  const registered = JSON.parse(register);
+  const context = execFileSync('node', [
+    bin,
+    'agent',
+    'context',
+    '--port',
+    port,
+    '--session',
+    registered.session_id,
+    '--intent',
+    'Add dataset insight capabilities',
+    '--format',
+    'summary'
+  ], { encoding: 'utf8' });
+  assert.ok(context.includes('"required_evidence"'));
+
   await new Promise((resolve) => {
     const req = http.request(`http://127.0.0.1:${port}/v1/runtime/stop`, { method: 'POST' }, () => resolve());
     req.on('error', () => resolve());
