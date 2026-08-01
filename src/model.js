@@ -338,6 +338,8 @@ on:
   push:
     branches:
       - main
+permissions:
+  contents: read
 jobs:
   assurance:
     runs-on: ubuntu-latest
