@@ -60,3 +60,30 @@ test('confirm/correct architecture decisions persist and apply', () => {
   assert.ok(model.userDecisions.architectureCorrections.includes('Use Worker Runtime for analytics capability'));
   assert.ok(model.architecture.some((layer) => layer.layer === 'User Corrections'));
 });
+
+test('buildModel includes python analyzer output in shared model', () => {
+  const repo = makeRepo();
+  fs.mkdirSync(path.join(repo, 'services', 'analytics'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'pyproject.toml'), '[project]\nname = "fixture-python"\n');
+  fs.writeFileSync(path.join(repo, 'requirements.txt'), 'fastapi==0.111.0\npydantic==2.8.0\n');
+  fs.writeFileSync(path.join(repo, 'services', 'analytics', 'app.py'), [
+    'from fastapi import FastAPI',
+    'from pydantic import BaseModel',
+    '',
+    'app = FastAPI()',
+    '',
+    'class DatasetInsightResult(BaseModel):',
+    '  confidence: float',
+    '',
+    '@app.get("/insight")',
+    'def insight() -> DatasetInsightResult:',
+    '  return DatasetInsightResult(confidence=0.9)'
+  ].join('\n'));
+
+  const model = buildModel(repo);
+  assert.ok(model.analyzers.some((analyzer) => analyzer.id === 'archie-python'));
+  assert.ok(model.discovery.languages.some((language) => language.key === 'python'));
+  assert.ok(model.modules.some((module) => module.id.includes('module:python:services.analytics.app')));
+  assert.ok(model.runtimes.some((runtime) => runtime.includes('Python')));
+  assert.ok(model.contracts.some((contract) => contract.language === 'python'));
+});

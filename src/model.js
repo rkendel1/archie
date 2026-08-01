@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
+const { analyzeRepository: analyzeWithRegistry } = require('./analyzers');
 
 const MODEL_DIR = '.archie';
 const MODEL_FILE = 'system-model.json';
@@ -46,6 +47,27 @@ function discoverLanguages(files) {
   return Array.from(counts.entries())
     .sort((a, b) => b[1] - a[1])
     .map(([ext, count]) => ({ ext, count }));
+}
+
+function languageLabel(language) {
+  const normalized = String(language || '').toLowerCase();
+  if (normalized === 'javascript') return 'JavaScript';
+  if (normalized === 'typescript') return 'TypeScript';
+  if (normalized === 'python') return 'Python';
+  if (normalized === 'rust') return 'Rust';
+  if (normalized === 'go') return 'Go';
+  if (normalized === 'java') return 'Java';
+  if (normalized === 'configuration') return 'Configuration';
+  return normalized ? normalized[0].toUpperCase() + normalized.slice(1) : 'Unknown';
+}
+
+function normalizeLanguageSummary(entries = []) {
+  return entries.map((entry) => ({
+    language: languageLabel(entry.language),
+    key: String(entry.language || '').toLowerCase(),
+    count: Number(entry.count || 0),
+    percentage: Number(entry.percentage || 0)
+  }));
 }
 
 function discoverFrameworks(root) {
@@ -158,32 +180,65 @@ function scoreFileImportance(root, files, contracts, testLinks) {
 function buildGraph(model) {
   const nodes = [{ id: 'product-intent', type: 'product-intent', label: 'Product Intent' }];
   const edges = [];
+  const nodeIds = new Set(['product-intent']);
 
   for (const runtime of model.runtimes) {
     const id = `runtime:${runtime}`;
+    if (nodeIds.has(id)) continue;
+    nodeIds.add(id);
     nodes.push({ id, type: 'runtime', label: runtime });
     edges.push({ from: 'product-intent', to: id, type: 'supports' });
   }
 
   for (const c of model.contracts) {
     const id = `contract:${c.file}`;
-    nodes.push({ id, type: 'contract', label: c.file });
+    if (nodeIds.has(id)) continue;
+    nodeIds.add(id);
+    nodes.push({ id, type: 'contract', label: c.file, language: c.language || null });
     for (const runtime of model.runtimes) edges.push({ from: `runtime:${runtime}`, to: id, type: 'uses' });
   }
 
   for (const f of model.importantFiles) {
     const id = `file:${f.file}`;
-    nodes.push({ id, type: 'implementation', label: f.file, importance: f.score });
+    if (nodeIds.has(id)) continue;
+    nodeIds.add(id);
+    nodes.push({ id, type: 'implementation', label: f.file, importance: f.score, language: f.language || null });
     if (/(capability|service|feature)/i.test(f.file)) edges.push({ from: 'product-intent', to: id, type: 'capability' });
+  }
+
+  for (const module of model.modules || []) {
+    if (nodeIds.has(module.id)) continue;
+    nodeIds.add(module.id);
+    nodes.push({
+      id: module.id,
+      type: module.kind || 'module',
+      label: module.name,
+      file: module.file,
+      language: module.language || null,
+      technology: module.technology || null,
+      runtime: module.runtime || null
+    });
+  }
+
+  for (const dependency of model.dependencies || []) {
+    edges.push({
+      from: dependency.from,
+      to: dependency.to,
+      type: dependency.kind || 'depends_on',
+      language: dependency.language || null,
+      confidence: dependency.confidence || null
+    });
   }
 
   return { nodes, edges };
 }
 
 function inferArchitecture(model) {
+  const languageSummary = (model.discovery?.languages || []).map((item) => `${item.language} ${item.percentage}%`).join(' · ');
   return [
     { layer: 'Product Intent', summary: 'Repository-level outcomes are inferred from runtime/capability markers.' },
     { layer: 'Runtimes', summary: model.runtimes.join(' · ') || 'No runtimes detected' },
+    { layer: 'Languages', summary: languageSummary || 'No languages detected' },
     { layer: 'Contracts', summary: `${model.contracts.length} contract candidates detected` },
     { layer: 'Implementation', summary: `${model.importantFiles.length} important files ranked` },
     { layer: 'Evidence', summary: `${model.tests.tests.length} tests mapped` }
@@ -275,24 +330,62 @@ function buildModel(rootDir) {
   const absRoot = path.resolve(rootDir);
   const filesAbs = walkFiles(absRoot);
   const files = filesAbs.map((f) => rel(absRoot, f));
-  const frameworks = discoverFrameworks(absRoot);
-  const contracts = extractContracts(absRoot, filesAbs);
-  const tests = mapTests(absRoot, filesAbs);
+  const analysis = analyzeWithRegistry(absRoot, filesAbs);
+  const observation = analysis.observation;
+  const languageSummary = normalizeLanguageSummary(analysis.languages);
+  const frameworks = observation.frameworks || discoverFrameworks(absRoot);
+  const contracts = (observation.contracts || []).map((contract) => ({
+    file: contract.file,
+    name: contract.name,
+    language: contract.language,
+    confidence: contract.confidence?.value || 0.7,
+    reason: contract.confidence?.status || 'observed'
+  }));
+  const tests = {
+    tests: (observation.tests || []).map((entry) => entry.file),
+    links: (observation.tests || [])
+      .filter((entry) => entry.implementation)
+      .map((entry) => ({
+        test: entry.file,
+        implementation: entry.implementation,
+        confidence: entry.confidence?.value || 0.7
+      }))
+  };
+  const runtimes = Array.from(new Set([
+    ...(observation.runtimes || []).map((runtime) => runtime.name),
+    ...detectRuntimes(absRoot, filesAbs, frameworks)
+  ]));
+  const entryPoints = (observation.entryPoints || []).map((entry) => entry.file);
+  const packageJson = readJsonIfExists(path.join(absRoot, 'package.json')) || {};
 
   const model = {
     generatedAt: new Date().toISOString(),
     root: absRoot,
+    analyzers: analysis.analyzers,
     discovery: {
-      languages: discoverLanguages(files),
+      languages: languageSummary.length ? languageSummary : discoverLanguages(files).map((entry) => ({
+        language: entry.ext,
+        key: entry.ext,
+        count: entry.count,
+        percentage: 0
+      })),
       frameworks,
-      entryPoints: identifyEntryPoints(absRoot),
+      entryPoints: Array.from(new Set([...entryPoints, ...identifyEntryPoints(absRoot)])),
       applications: files.filter((f) => /app|service|api|worker|desktop|runtime/i.test(f)).slice(0, 100),
-      dependencies: readJsonIfExists(path.join(absRoot, 'package.json'))?.dependencies || {}
+      dependencies: packageJson.dependencies || {},
+      technologies: observation.technologies || []
     },
-    runtimes: detectRuntimes(absRoot, filesAbs, frameworks),
+    runtimes,
     contracts,
     tests,
-    importantFiles: scoreFileImportance(absRoot, filesAbs, contracts, tests.links)
+    modules: observation.modules || [],
+    symbols: observation.symbols || [],
+    dependencies: observation.dependencies || [],
+    diagnostics: observation.diagnostics || [],
+    importantFiles: scoreFileImportance(absRoot, filesAbs, contracts, tests.links).map((row) => {
+      const language = observation.files?.find((file) => file.path === row.file)?.language || null;
+      return { ...row, language };
+    })
   };
 
   model.graph = buildGraph(model);
@@ -301,6 +394,43 @@ function buildModel(rootDir) {
   model.confidence = confidence(model);
 
   return applyDecisions(model, loadDecisions(absRoot));
+}
+
+function projectModelByLanguage(model, language) {
+  const key = String(language || '').trim().toLowerCase();
+  if (!key || key === 'all') return model;
+  const allObservedFiles = new Set((model.modules || []).filter((module) => String(module.language || '').toLowerCase() === key).map((module) => module.file));
+  for (const contract of model.contracts || []) {
+    if (String(contract.language || '').toLowerCase() === key) allObservedFiles.add(contract.file);
+  }
+  const allowedNodeIds = new Set((model.graph?.nodes || []).filter((node) => String(node.language || '').toLowerCase() === key || node.type === 'product-intent' || node.type === 'runtime').map((node) => node.id));
+  for (const runtime of model.runtimes || []) allowedNodeIds.add(`runtime:${runtime}`);
+
+  const projected = {
+    ...model,
+    discovery: {
+      ...model.discovery,
+      languages: (model.discovery.languages || []).filter((entry) => String(entry.key || entry.language || '').toLowerCase() === key)
+    },
+    contracts: (model.contracts || []).filter((contract) => String(contract.language || '').toLowerCase() === key),
+    modules: (model.modules || []).filter((module) => String(module.language || '').toLowerCase() === key),
+    symbols: (model.symbols || []).filter((symbol) => String(symbol.language || '').toLowerCase() === key),
+    dependencies: (model.dependencies || []).filter((dependency) => String(dependency.language || '').toLowerCase() === key),
+    importantFiles: (model.importantFiles || []).filter((file) => (file.language ? String(file.language).toLowerCase() === key : allObservedFiles.has(file.file))),
+    tests: {
+      tests: (model.tests?.tests || []).filter((file) => allObservedFiles.has(file)),
+      links: (model.tests?.links || []).filter((link) => allObservedFiles.has(link.implementation) || allObservedFiles.has(link.test))
+    },
+    graph: {
+      nodes: (model.graph?.nodes || []).filter((node) => allowedNodeIds.has(node.id)),
+      edges: (model.graph?.edges || []).filter((edge) => allowedNodeIds.has(edge.from) && allowedNodeIds.has(edge.to))
+    }
+  };
+
+  if (!projected.discovery.languages.length) {
+    projected.discovery.languages = [{ language: languageLabel(key), key, count: 0, percentage: 0 }];
+  }
+  return projected;
 }
 
 function saveModel(rootDir, model) {
@@ -390,6 +520,7 @@ function computeImpact(model, changedFiles) {
   const affectedImportantFiles = model.importantFiles.filter((f) => changed.has(f.file));
   const contractsAffected = model.contracts.filter((c) => changed.has(c.file));
   const runtimeAffected = model.runtimes.filter((runtime) => {
+    if (/python/i.test(runtime)) return [...changed].some((f) => /\.py$/.test(f) || /pyproject\.toml|requirements|setup\.py|setup\.cfg|pipfile/i.test(f));
     if (/worker/i.test(runtime)) return [...changed].some((f) => /worker|runtime/i.test(f));
     if (/browser/i.test(runtime)) return [...changed].some((f) => /ui|browser|react|web/i.test(f));
     if (/electron/i.test(runtime)) return [...changed].some((f) => /electron|desktop/i.test(f));
@@ -483,5 +614,6 @@ module.exports = {
   modelPath,
   loadDecisions,
   confirmUnderstanding,
-  correctArchitecture
+  correctArchitecture,
+  projectModelByLanguage
 };

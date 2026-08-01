@@ -79,6 +79,8 @@ class RuntimeServer {
           previous_version: previousVersion,
           updated_at: updatedAt,
           confidence: model?.confidence || 0,
+          languages: model?.discovery?.languages || [],
+          analyzers: model?.analyzers || [],
           architecture_layers: model?.architecture?.length || 0,
           runtimes: model?.runtimes?.length || 0,
           capabilities: model?.importantFiles?.filter((file) => /capability|feature|service/i.test(file.file)).length || 0,
