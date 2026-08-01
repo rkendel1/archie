@@ -39,6 +39,8 @@ Commands:
 - `participant analyzers`
 - `participant watch`
 - `participant serve`
+- `participant up`
+- `participant down`
 - `participant status --live`
 - `participant session start --intent "..."`
 - `participant change propose --intent "Add anomaly detection" --files src/analytics.ts,workers/anomaly-worker.rs`
@@ -70,6 +72,22 @@ participant-desktop
 ```
 
 Open `http://localhost:43111`.
+
+## Local runtime distribution (Docker + native desktop)
+
+Start runtime services with one command:
+
+```bash
+archie up
+```
+
+This starts Docker Compose services (Archie runtime + PostgreSQL, with optional Ollama profile), waits for runtime readiness, and starts the desktop host app.
+
+Stop services:
+
+```bash
+archie down
+```
 
 Desktop features in this MVP:
 

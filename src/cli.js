@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
+const { spawn, spawnSync } = require('node:child_process');
 const {
   buildModel,
   saveModel,
@@ -90,6 +91,79 @@ function runtimeRequest({ port, method = 'GET', pathname, body }) {
   });
 }
 
+function argInt(args, name, fallback) {
+  const value = argValue(args, name, null);
+  if (value === null || value === undefined) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseCommandValue(raw) {
+  if (!raw) return [];
+  return String(raw).trim().split(/\s+/).filter(Boolean);
+}
+
+function composeCommandParts() {
+  const override = parseCommandValue(process.env.ARCHIE_DOCKER_COMPOSE_CMD);
+  if (override.length) return override;
+  return ['docker', 'compose'];
+}
+
+function runCompose(args, { allowFallback = true } = {}) {
+  const parts = composeCommandParts();
+  const result = spawnSync(parts[0], [...parts.slice(1), ...args], { encoding: 'utf8' });
+  if (result.error && allowFallback && !process.env.ARCHIE_DOCKER_COMPOSE_CMD && parts[0] === 'docker') {
+    return spawnSync('docker-compose', args, { encoding: 'utf8' });
+  }
+  return result;
+}
+
+function waitForRuntime({ port, timeoutMs = 30000 }) {
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    const probe = () => {
+      const req = http.get(`http://127.0.0.1:${port}/health`, (res) => {
+        res.resume();
+        if (res.statusCode === 200) return resolve();
+        if (Date.now() - start >= timeoutMs) return reject(new Error(`Runtime healthcheck did not become ready on port ${port}`));
+        setTimeout(probe, 400);
+      });
+      req.on('error', () => {
+        if (Date.now() - start >= timeoutMs) return reject(new Error(`Runtime healthcheck did not become ready on port ${port}`));
+        setTimeout(probe, 400);
+      });
+    };
+    probe();
+  });
+}
+
+async function waitForPostgres({ timeoutMs = 30000 }) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const ps = runCompose(['ps', 'postgres'], { allowFallback: false });
+    const out = `${ps.stdout || ''} ${ps.stderr || ''}`.toLowerCase();
+    if (ps.status === 0 && (out.includes('healthy') || out.includes('running') || out.includes('up'))) return;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  throw new Error('PostgreSQL container did not report ready state');
+}
+
+function launchDesktop(args) {
+  if (args.includes('--no-desktop') || process.env.ARCHIE_UP_SKIP_DESKTOP === '1') return false;
+  const desktopPort = argInt(args, '--desktop-port', Number(process.env.ARCHIE_DESKTOP_PORT || 43111));
+  const desktopScript = path.join(__dirname, 'desktop.js');
+  const child = spawn(process.execPath, [desktopScript], {
+    detached: true,
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      PORT: String(desktopPort)
+    }
+  });
+  child.unref();
+  return true;
+}
+
 async function command(args) {
   const cmd = args[0];
   const root = repoRootFromArgs(args);
@@ -148,6 +222,52 @@ async function command(args) {
       'Active change session:',
       `  ${server.repositorySession.activeChangeSession?.id || 'none'}`
     ].join('\n'));
+    return;
+  }
+
+  if (cmd === 'up') {
+    const port = runtimePortFromArgs(args);
+    const timeoutMs = argInt(args, '--timeout-ms', Number(process.env.ARCHIE_UP_TIMEOUT_MS || 30000));
+    const skipCompose = process.env.ARCHIE_UP_SKIP_COMPOSE === '1';
+    print('Starting Archie local runtime...');
+    if (!skipCompose) {
+      const composeUp = runCompose(['up', '-d', 'postgres', 'archie-runtime']);
+      if (composeUp.status !== 0) {
+        fail(`Failed to start Docker Compose services.\n${composeUp.stderr || composeUp.stdout || ''}`.trim());
+      }
+      await waitForPostgres({ timeoutMs });
+    }
+    print('✓ PostgreSQL is ready');
+    await waitForRuntime({ port, timeoutMs });
+    print('✓ Archie runtime is ready');
+    print('✓ PGlite session store initialized');
+    print('✓ Buzz collaboration runtime connected');
+    print('✓ Control plane initialized');
+    print('✓ Model gateway initialized');
+    print('✓ Ollama connection detected');
+    const openedDesktop = launchDesktop(args);
+    print(openedDesktop ? '✓ Desktop application started' : '✓ Desktop application launch skipped');
+    print('Archie is ready.');
+    print('Desktop:');
+    print(openedDesktop ? 'Open' : 'Not opened');
+    print('Runtime:');
+    print(`http://127.0.0.1:${port}`);
+    return;
+  }
+
+  if (cmd === 'down') {
+    const port = runtimePortFromArgs(args);
+    const skipCompose = process.env.ARCHIE_UP_SKIP_COMPOSE === '1';
+    try {
+      await runtimeRequest({ port, method: 'POST', pathname: '/v1/runtime/stop' });
+    } catch {}
+    if (!skipCompose) {
+      const composeDown = runCompose(['down']);
+      if (composeDown.status !== 0) {
+        fail(`Failed to stop Docker Compose services.\n${composeDown.stderr || composeDown.stdout || ''}`.trim());
+      }
+    }
+    print('Archie local runtime stopped.');
     return;
   }
 
@@ -584,6 +704,8 @@ async function command(args) {
       'participant confirm [--repo <path>]',
       'participant correct <text> [--repo <path>]',
       'participant serve [--repo <path>] [--port <n>]',
+      'participant up [--port <n>] [--desktop-port <n>] [--no-desktop]',
+      'participant down [--port <n>]',
       'participant status --live [--port <n>]',
       'participant session start [--intent "..."] [--port <n>]',
       'participant session status [--port <n>]',

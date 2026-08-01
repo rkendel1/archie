@@ -158,3 +158,52 @@ test('participant supports analyzer inspection and language filtering', () => {
   assert.ok(summary.includes('"languages"'));
   assert.ok(summary.includes('Python'));
 });
+
+test('participant up/down manage local runtime lifecycle', async () => {
+  const repo = makeRepo();
+  const bin = path.join('/home/runner/work/archie/archie', 'bin', 'participant');
+  const port = String(45000 + Math.floor(Math.random() * 1000));
+  const runtime = spawn('node', [bin, 'serve', '--repo', repo, '--port', port], { stdio: 'ignore' });
+
+  await new Promise((resolve, reject) => {
+    let attempts = 0;
+    const timer = setInterval(() => {
+      attempts += 1;
+      const req = http.get(`http://127.0.0.1:${port}/health`, (res) => {
+        res.resume();
+        if (res.statusCode === 200) {
+          clearInterval(timer);
+          resolve();
+        }
+      });
+      req.on('error', () => {
+        if (attempts >= 40) {
+          clearInterval(timer);
+          reject(new Error('Runtime health endpoint did not become available'));
+        }
+      });
+    }, 50);
+  });
+
+  const up = execFileSync('node', [bin, 'up', '--port', port, '--no-desktop', '--timeout-ms', '2000'], {
+    encoding: 'utf8',
+    env: { ...process.env, ARCHIE_UP_SKIP_COMPOSE: '1' }
+  });
+  assert.ok(up.includes('Starting Archie local runtime...'));
+  assert.ok(up.includes('✓ Archie runtime is ready'));
+  assert.ok(up.includes('Archie is ready.'));
+
+  const down = execFileSync('node', [bin, 'down', '--port', port], {
+    encoding: 'utf8',
+    env: { ...process.env, ARCHIE_UP_SKIP_COMPOSE: '1' }
+  });
+  assert.ok(down.includes('Archie local runtime stopped.'));
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const stopped = await new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/health`, () => resolve(false));
+    req.on('error', () => resolve(true));
+  });
+  assert.equal(stopped, true);
+  runtime.kill('SIGTERM');
+});

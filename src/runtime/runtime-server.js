@@ -29,7 +29,7 @@ function parseBody(req) {
 class RuntimeServer {
   constructor(rootDir, options = {}) {
     this.rootDir = path.resolve(rootDir);
-    this.host = options.host || '127.0.0.1';
+    this.host = options.host || process.env.ARCHIE_RUNTIME_HOST || '127.0.0.1';
     this.port = Number(options.port ?? 4317);
     this.repositorySession = options.session || new RepositorySession(this.rootDir);
     this.server = null;
@@ -728,7 +728,8 @@ class RuntimeServer {
   }
 
   get baseUrl() {
-    return `http://${this.host}:${this.port}`;
+    const visibleHost = this.host === '0.0.0.0' ? '127.0.0.1' : this.host;
+    return `http://${visibleHost}:${this.port}`;
   }
 }
 
