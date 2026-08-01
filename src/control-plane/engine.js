@@ -7,6 +7,13 @@ const { createClaim } = require('../truth/claims');
 const { verifyClaims } = require('../truth/verification');
 const { evaluateCoordination } = require('./coordination');
 const { evaluateReviewQueue } = require('./review-queue');
+const { evaluateEngineeringPolicies } = require('./policy/engine');
+const { buildInterventions } = require('./interventions/service');
+const { buildRequirements } = require('./execution/requirements');
+const { computeContextState } = require('./context/service');
+const { buildCoordinationActions } = require('./coordination/actions');
+const { evaluateCompletionReadiness } = require('./completion/evaluator');
+const { buildActiveEngineeringState } = require('./execution/state');
 
 function runControlPlane({
   model,
@@ -17,13 +24,15 @@ function runControlPlane({
   verification,
   architectureIntent,
   state,
-  repositoryRevision
+  repositoryRevision,
+  previousRevision
 }) {
   const topology = buildRuntimeTopology(model || {});
   const contractRegistry = buildContractRegistry(model || {});
   const proposedOwnership = inferProposedOwnership(activeChangeSession, model);
   const conformance = assessTopologyConformance(architectureIntent || {}, topology, { proposedOwnership });
-  const coordination = evaluateCoordination(state, topology, activeChangeSession?.id || null);
+  const activeChangeId = activeChangeSession?.id || null;
+  const coordination = evaluateCoordination(state, topology, activeChangeId);
 
   const claims = verifyClaims([
     createClaim({
@@ -69,7 +78,16 @@ function runControlPlane({
     conflictsByChange
   });
 
-  return {
+  const context = computeContextState({
+    activeChangeSession,
+    modelVersion: repositoryRevision,
+    previousRevision,
+    existingContexts: state.participantContexts,
+    affectedContracts: contractRegistry.drift.map((entry) => entry.contract).filter(Boolean),
+    affectedRuntimes: conformance.drifts.filter((entry) => String(entry.type || '').includes('RUNTIME'))
+  });
+
+  const policyInput = {
     generatedAt: new Date().toISOString(),
     topology,
     contracts: contractRegistry,
@@ -82,7 +100,68 @@ function runControlPlane({
       matrixByChange: assuranceByChange,
       evidenceFreshness: buildEvidenceFreshness(evidence)
     },
+    reviewQueue,
+    context,
+    evidenceState: evidence
+  };
+
+  const policy = evaluateEngineeringPolicies(policyInput);
+  const interventions = buildInterventions({
+    evaluations: policy.evaluations,
+    activeChangeId,
+    existing: state.interventions
+  });
+  const requirements = buildRequirements({
+    changeId: activeChangeId,
+    evaluations: policy.evaluations,
+    existing: state.requirements
+  });
+  const coordinationActions = buildCoordinationActions({
+    changeId: activeChangeId,
+    conflicts: coordination.conflicts,
+    existing: state.coordinationActions
+  });
+  const completionReadiness = evaluateCompletionReadiness({
+    requirements,
+    interventions,
     reviewQueue
+  });
+
+  const reviewState = {
+    risk: reviewQueue.summary.highRisk > 0 ? 'HIGH' : 'LOW',
+    requiresHumanDecision: reviewQueue.summary.requiresDecision > 0,
+    reasons: reviewQueue.items
+      .filter((item) => item.requiresHumanApproval)
+      .map((item) => item.risk.reason)
+      .slice(0, 5)
+  };
+
+  const activeEngineeringState = buildActiveEngineeringState({
+    changeId: activeChangeId,
+    requirements,
+    interventions,
+    contextState: context,
+    coordinationState: {
+      conflicts: coordination.conflicts,
+      actions: coordinationActions,
+      claims: coordination.claims
+    },
+    assuranceState: {
+      score: assurance?.score ?? 0,
+      status: assurance?.status || 'in_progress'
+    },
+    reviewState,
+    completionReadiness
+  });
+
+  return {
+    ...policyInput,
+    policy,
+    interventions,
+    requirements,
+    coordinationActions,
+    completionReadiness,
+    activeEngineeringState
   };
 }
 
