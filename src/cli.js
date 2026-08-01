@@ -12,7 +12,9 @@ const {
   checkModel,
   verifyEvidence,
   githubReport,
-  modelPath
+  modelPath,
+  confirmUnderstanding,
+  correctArchitecture
 } = require('./model');
 
 function print(obj) {
@@ -37,7 +39,7 @@ function command(args) {
   if (cmd === 'init') {
     writeDefaultConfig(root);
     const workflowPath = writeWorkflow(root);
-    print({ ok: true, root, workflowPath, next: ['participant analyze', 'participant report --format github'] });
+    print({ ok: true, root, workflowPath, next: ['participant analyze --summary', 'participant watch'] });
     return;
   }
 
@@ -50,13 +52,11 @@ function command(args) {
           primaryApplication: path.basename(root),
           detectedArchitecture: model.architecture,
           executionEnvironments: model.runtimes,
-          importantBoundaries: [
-            'Application → Capability SDK',
-            'Capability → Runtime ABI',
-            'Runtime → Provider'
-          ],
+          importantFiles: model.importantFiles.slice(0, 5),
+          importantBoundaries: ['Application → Capability SDK', 'Capability → Runtime ABI', 'Runtime → Provider'],
           uncertainties: model.uncertainties,
-          confidence: `${model.confidence}%`
+          confidence: `${model.confidence}%`,
+          systemStatus: model.systemStatus || 'pending-review'
         }
       });
     } else {
@@ -88,7 +88,9 @@ function command(args) {
       } catch (e) {
         print({ event: 'error', message: e.message });
       } finally {
-        setTimeout(() => { busy = false; }, 200);
+        setTimeout(() => {
+          busy = false;
+        }, 200);
       }
     });
     print({ ok: true, watching: root, hint: 'Use Ctrl+C to stop.' });
@@ -108,12 +110,9 @@ function command(args) {
     const model = loadModel(root);
     if (!model) fail('No system model found. Run participant analyze first.');
     const explicit = args.indexOf('--files');
-    let files = [];
-    if (explicit !== -1 && args[explicit + 1]) {
-      files = args[explicit + 1].split(',').map((s) => s.trim()).filter(Boolean);
-    } else {
-      files = listChangedFiles(root);
-    }
+    const files = explicit !== -1 && args[explicit + 1]
+      ? args[explicit + 1].split(',').map((s) => s.trim()).filter(Boolean)
+      : listChangedFiles(root);
     print(computeImpact(model, files));
     return;
   }
@@ -135,11 +134,22 @@ function command(args) {
     if (!model) fail('No system model found. Run participant analyze first.');
     const impact = computeImpact(model, listChangedFiles(root));
     const verification = verifyEvidence(model, impact.changedFiles);
-    if (format === 'github') {
-      print(githubReport(model, impact, verification));
-      return;
-    }
+    if (format === 'github') return print(githubReport(model, impact, verification));
     print({ model, impact, verification });
+    return;
+  }
+
+  if (cmd === 'confirm') {
+    const result = confirmUnderstanding(root);
+    print({ ok: true, result });
+    return;
+  }
+
+  if (cmd === 'correct') {
+    const correction = args.slice(1).join(' ').trim();
+    if (!correction) fail('Provide correction text, e.g. participant correct "Use Worker Runtime for analytics"');
+    const result = correctArchitecture(root, correction);
+    print({ ok: true, result });
     return;
   }
 
@@ -151,7 +161,9 @@ function command(args) {
       'participant check <architecture|contracts|capabilities> [--repo <path>]',
       'participant impact [--repo <path>] [--files f1,f2]',
       'participant verify [--repo <path>] [--changed]',
-      'participant report [--repo <path>] [--format github|json]'
+      'participant report [--repo <path>] [--format github|json]',
+      'participant confirm [--repo <path>]',
+      'participant correct <text> [--repo <path>]'
     ]
   });
 }

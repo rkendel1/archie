@@ -1,21 +1,25 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { execSync } = require('node:child_process');
 
 const MODEL_DIR = '.archie';
 const MODEL_FILE = 'system-model.json';
 const CONFIG_FILE = 'config.json';
+const DECISIONS_FILE = 'decisions.json';
 
 function walkFiles(rootDir, out = [], depth = 0) {
-  if (depth > 8) return out;
+  if (depth > 10) return out;
   const entries = fs.readdirSync(rootDir, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.name === 'node_modules' || entry.name === '.git' || entry.name.startsWith('.archie-cache')) continue;
+    if (
+      entry.name === 'node_modules' ||
+      entry.name === '.git' ||
+      entry.name === '.archie' ||
+      entry.name.startsWith('.archie-cache')
+    ) continue;
     const abs = path.join(rootDir, entry.name);
-    if (entry.isDirectory()) {
-      walkFiles(abs, out, depth + 1);
-    } else {
-      out.push(abs);
-    }
+    if (entry.isDirectory()) walkFiles(abs, out, depth + 1);
+    else out.push(abs);
   }
   return out;
 }
@@ -46,10 +50,7 @@ function discoverLanguages(files) {
 
 function discoverFrameworks(root) {
   const pkg = readJsonIfExists(path.join(root, 'package.json')) || {};
-  const deps = {
-    ...(pkg.dependencies || {}),
-    ...(pkg.devDependencies || {})
-  };
+  const deps = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
   const known = ['react', 'next', 'vite', 'electron', 'express', 'fastify', 'nestjs', 'typescript'];
   return known.filter((k) => deps[k]).map((name) => ({ name, version: deps[name] }));
 }
@@ -64,7 +65,7 @@ function identifyEntryPoints(root) {
       if (typeof pkg.bin === 'object') entryPoints.push(...Object.values(pkg.bin));
     }
     if (pkg.scripts) {
-      for (const [name, cmd] of Object.entries(pkg.scripts)) {
+      for (const cmd of Object.values(pkg.scripts)) {
         if (/node\s+\S+|tsx\s+\S+|ts-node\s+\S+/.test(cmd)) {
           const match = cmd.match(/(?:node|tsx|ts-node)\s+([^\s]+)/);
           if (match?.[1]) entryPoints.push(match[1]);
@@ -85,10 +86,10 @@ function detectRuntimes(root, files, frameworks) {
   if (frameworks.some((f) => f.name === 'electron') || lowerFiles.some((f) => f.includes('electron'))) {
     runtimes.add('Electron Desktop Host');
   }
-  if (lowerFiles.some((f) => f.includes('worker'))) {
+  if (lowerFiles.some((f) => f.includes('worker') || f.includes('.rs'))) {
     runtimes.add('WASM Worker Runtime');
   }
-  if (frameworks.some((f) => f.name === 'react' || f.name === 'next') || lowerFiles.some((f) => f.includes('browser'))) {
+  if (frameworks.some((f) => f.name === 'react' || f.name === 'next') || lowerFiles.some((f) => f.includes('browser') || f.includes('ui/'))) {
     runtimes.add('Browser Runtime');
   }
   return Array.from(runtimes);
@@ -98,7 +99,7 @@ function extractContracts(root, files) {
   const contracts = [];
   for (const abs of files) {
     const file = rel(root, abs);
-    if (!/\.(ts|tsx|js|json)$/i.test(file)) continue;
+    if (!/\.(ts|tsx|js|json|yaml|yml)$/i.test(file)) continue;
     const basename = path.basename(file).toLowerCase();
     if (/(contract|schema|manifest|types?)/.test(basename)) {
       contracts.push({ file, confidence: 0.9, reason: 'filename-pattern' });
@@ -106,7 +107,7 @@ function extractContracts(root, files) {
     }
     if (!/\.(ts|tsx|js)$/i.test(file)) continue;
     const content = fs.readFileSync(abs, 'utf8');
-    if (/\b(interface|type)\s+[A-Z]/.test(content) || /zod|yup|ajv/.test(content)) {
+    if (/\b(interface|type)\s+[A-Z]/.test(content) || /zod|yup|ajv|jsonschema/.test(content)) {
       contracts.push({ file, confidence: 0.7, reason: 'source-pattern' });
     }
   }
@@ -115,48 +116,39 @@ function extractContracts(root, files) {
 
 function mapTests(root, files) {
   const tests = files.filter((f) => /(\.test\.|\.spec\.|__tests__)/.test(path.basename(f))).map((f) => rel(root, f));
-  const map = [];
+  const links = [];
   for (const testFile of tests) {
     const base = testFile.replace(/(\.test|\.spec)\.[^.]+$/, '').replace(/__tests__\//, '');
-    const impl = files
-      .map((f) => rel(root, f))
-      .find((f) => f.includes(base) && !f.includes(testFile));
-    if (impl) map.push({ test: testFile, implementation: impl });
+    const impl = files.map((f) => rel(root, f)).find((f) => f.includes(base) && f !== testFile);
+    if (impl) links.push({ test: testFile, implementation: impl });
   }
-  return { tests, links: map };
+  return { tests, links };
 }
 
 function scoreFileImportance(root, files, contracts, testLinks) {
   const linkedTests = new Map();
-  for (const link of testLinks) {
-    linkedTests.set(link.implementation, (linkedTests.get(link.implementation) || 0) + 1);
-  }
+  for (const link of testLinks) linkedTests.set(link.implementation, (linkedTests.get(link.implementation) || 0) + 1);
   const contractSet = new Set(contracts.map((c) => c.file));
 
   const rows = [];
   for (const abs of files) {
     const file = rel(root, abs);
+    const isCode = /\.(ts|tsx|js|jsx|mjs|cjs|rs|go|py|java|json)$/.test(file);
+    if (!isCode) continue;
+
     const content = fs.readFileSync(abs, 'utf8');
     const architectureAuthority = /(manifest|kernel|registry|runtime|planner)/i.test(file) ? 30 : 10;
     const runtimeReachability = /(index|main|app|server|worker|runtime)/i.test(file) ? 20 : 5;
-    const dependencyCentrality = Math.min((content.match(/\b(import|require\()/g) || []).length, 15);
+    const dependencyCentrality = Math.min((content.match(/\b(import|require\(|from\s+['"])/g) || []).length, 15);
     const contractOwnership = contractSet.has(file) ? 15 : 0;
-    const capabilityImpact = /(capability|feature|service)/i.test(file) ? 10 : 3;
+    const capabilityImpact = /(capability|feature|service|provider)/i.test(file) ? 10 : 3;
     const changeFrequency = 5;
     const failureImpact = linkedTests.has(file) ? 5 : 2;
-    const score = architectureAuthority + runtimeReachability + dependencyCentrality + contractOwnership + capabilityImpact + changeFrequency + failureImpact;
+
     rows.push({
       file,
-      score,
-      signals: {
-        architectureAuthority,
-        runtimeReachability,
-        dependencyCentrality,
-        contractOwnership,
-        capabilityImpact,
-        changeFrequency,
-        failureImpact
-      }
+      score: architectureAuthority + runtimeReachability + dependencyCentrality + contractOwnership + capabilityImpact + changeFrequency + failureImpact,
+      signals: { architectureAuthority, runtimeReachability, dependencyCentrality, contractOwnership, capabilityImpact, changeFrequency, failureImpact }
     });
   }
 
@@ -164,10 +156,8 @@ function scoreFileImportance(root, files, contracts, testLinks) {
 }
 
 function buildGraph(model) {
-  const nodes = [];
+  const nodes = [{ id: 'product-intent', type: 'product-intent', label: 'Product Intent' }];
   const edges = [];
-
-  nodes.push({ id: 'product-intent', type: 'product-intent', label: 'Product Intent' });
 
   for (const runtime of model.runtimes) {
     const id = `runtime:${runtime}`;
@@ -178,30 +168,26 @@ function buildGraph(model) {
   for (const c of model.contracts) {
     const id = `contract:${c.file}`;
     nodes.push({ id, type: 'contract', label: c.file });
-    for (const runtime of model.runtimes) {
-      edges.push({ from: `runtime:${runtime}`, to: id, type: 'uses' });
-    }
+    for (const runtime of model.runtimes) edges.push({ from: `runtime:${runtime}`, to: id, type: 'uses' });
   }
 
   for (const f of model.importantFiles) {
     const id = `file:${f.file}`;
     nodes.push({ id, type: 'implementation', label: f.file, importance: f.score });
-    if (/(capability|service)/i.test(f.file)) {
-      edges.push({ from: 'product-intent', to: id, type: 'capability' });
-    }
+    if (/(capability|service|feature)/i.test(f.file)) edges.push({ from: 'product-intent', to: id, type: 'capability' });
   }
 
   return { nodes, edges };
 }
 
 function inferArchitecture(model) {
-  const architecture = [];
-  architecture.push({ layer: 'Product Intent', summary: 'Repository-level outcomes are inferred from runtime/capability markers.' });
-  architecture.push({ layer: 'Runtimes', summary: `${model.runtimes.join(' · ')}` });
-  architecture.push({ layer: 'Contracts', summary: `${model.contracts.length} contract candidates detected` });
-  architecture.push({ layer: 'Implementation', summary: `${model.importantFiles.length} important files ranked` });
-  architecture.push({ layer: 'Evidence', summary: `${model.tests.tests.length} tests mapped` });
-  return architecture;
+  return [
+    { layer: 'Product Intent', summary: 'Repository-level outcomes are inferred from runtime/capability markers.' },
+    { layer: 'Runtimes', summary: model.runtimes.join(' · ') || 'No runtimes detected' },
+    { layer: 'Contracts', summary: `${model.contracts.length} contract candidates detected` },
+    { layer: 'Implementation', summary: `${model.importantFiles.length} important files ranked` },
+    { layer: 'Evidence', summary: `${model.tests.tests.length} tests mapped` }
+  ];
 }
 
 function findUncertainties(model) {
@@ -209,12 +195,8 @@ function findUncertainties(model) {
   if (model.runtimes.includes('Browser Runtime') && model.runtimes.includes('Electron Desktop Host')) {
     out.push('Browser and Electron session ownership is ambiguous');
   }
-  if (model.contracts.length === 0) {
-    out.push('No explicit contracts detected. Review contract detection patterns.');
-  }
-  if (model.tests.tests.length === 0) {
-    out.push('No test evidence linked to implementation.');
-  }
+  if (model.contracts.length === 0) out.push('No explicit contracts detected. Review contract detection patterns.');
+  if (model.tests.tests.length === 0) out.push('No test evidence linked to implementation.');
   return out;
 }
 
@@ -225,41 +207,6 @@ function confidence(model) {
   score += Math.min(model.importantFiles.length, 10);
   score -= model.uncertainties.length * 8;
   return Math.max(0, Math.min(100, score));
-}
-
-function buildModel(rootDir) {
-  const absRoot = path.resolve(rootDir);
-  const filesAbs = walkFiles(absRoot);
-  const files = filesAbs.map((f) => rel(absRoot, f));
-  const frameworks = discoverFrameworks(absRoot);
-  const entryPoints = identifyEntryPoints(absRoot);
-  const contracts = extractContracts(absRoot, filesAbs);
-  const tests = mapTests(absRoot, filesAbs);
-  const runtimes = detectRuntimes(absRoot, filesAbs, frameworks);
-  const importantFiles = scoreFileImportance(absRoot, filesAbs, contracts, tests.links);
-
-  const model = {
-    generatedAt: new Date().toISOString(),
-    root: absRoot,
-    discovery: {
-      languages: discoverLanguages(files),
-      frameworks,
-      entryPoints,
-      applications: files.filter((f) => /app|service|api|worker|desktop/i.test(f)).slice(0, 50),
-      dependencies: readJsonIfExists(path.join(absRoot, 'package.json'))?.dependencies || {}
-    },
-    runtimes,
-    contracts,
-    tests,
-    importantFiles
-  };
-
-  model.graph = buildGraph(model);
-  model.architecture = inferArchitecture(model);
-  model.uncertainties = findUncertainties(model);
-  model.confidence = confidence(model);
-
-  return model;
 }
 
 function ensureArchieDir(rootDir) {
@@ -274,6 +221,86 @@ function modelPath(rootDir) {
 
 function configPath(rootDir) {
   return path.join(rootDir, MODEL_DIR, CONFIG_FILE);
+}
+
+function decisionsPath(rootDir) {
+  return path.join(rootDir, MODEL_DIR, DECISIONS_FILE);
+}
+
+function loadDecisions(rootDir) {
+  return readJsonIfExists(decisionsPath(rootDir)) || { confirmedUnderstanding: false, architectureCorrections: [] };
+}
+
+function saveDecisions(rootDir, decisions) {
+  ensureArchieDir(rootDir);
+  fs.writeFileSync(decisionsPath(rootDir), JSON.stringify(decisions, null, 2));
+}
+
+function confirmUnderstanding(rootDir) {
+  const decisions = loadDecisions(rootDir);
+  decisions.confirmedUnderstanding = true;
+  saveDecisions(rootDir, decisions);
+  return decisions;
+}
+
+function correctArchitecture(rootDir, correction) {
+  const decisions = loadDecisions(rootDir);
+  const normalized = String(correction || '').trim();
+  if (normalized) decisions.architectureCorrections.push(normalized);
+  decisions.confirmedUnderstanding = false;
+  decisions.architectureCorrections = Array.from(new Set(decisions.architectureCorrections));
+  saveDecisions(rootDir, decisions);
+  return decisions;
+}
+
+function applyDecisions(model, decisions) {
+  if (!decisions) return model;
+  model.userDecisions = decisions;
+  if (decisions.architectureCorrections?.length) {
+    model.architecture = [
+      ...model.architecture,
+      { layer: 'User Corrections', summary: decisions.architectureCorrections.join(' | ') }
+    ];
+  }
+  if (decisions.confirmedUnderstanding) {
+    model.systemStatus = 'confirmed';
+    model.uncertainties = [];
+  } else {
+    model.systemStatus = 'pending-review';
+  }
+  return model;
+}
+
+function buildModel(rootDir) {
+  const absRoot = path.resolve(rootDir);
+  const filesAbs = walkFiles(absRoot);
+  const files = filesAbs.map((f) => rel(absRoot, f));
+  const frameworks = discoverFrameworks(absRoot);
+  const contracts = extractContracts(absRoot, filesAbs);
+  const tests = mapTests(absRoot, filesAbs);
+
+  const model = {
+    generatedAt: new Date().toISOString(),
+    root: absRoot,
+    discovery: {
+      languages: discoverLanguages(files),
+      frameworks,
+      entryPoints: identifyEntryPoints(absRoot),
+      applications: files.filter((f) => /app|service|api|worker|desktop|runtime/i.test(f)).slice(0, 100),
+      dependencies: readJsonIfExists(path.join(absRoot, 'package.json'))?.dependencies || {}
+    },
+    runtimes: detectRuntimes(absRoot, filesAbs, frameworks),
+    contracts,
+    tests,
+    importantFiles: scoreFileImportance(absRoot, filesAbs, contracts, tests.links)
+  };
+
+  model.graph = buildGraph(model);
+  model.architecture = inferArchitecture(model);
+  model.uncertainties = findUncertainties(model);
+  model.confidence = confidence(model);
+
+  return applyDecisions(model, loadDecisions(absRoot));
 }
 
 function saveModel(rootDir, model) {
@@ -344,10 +371,13 @@ function writeWorkflow(rootDir) {
 }
 
 function listChangedFiles(rootDir) {
-  const { execSync } = require('node:child_process');
   try {
-    const raw = execSync('git diff --name-only', { cwd: rootDir, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
-    return raw.split('\n').map((s) => s.trim()).filter(Boolean);
+    const parts = [];
+    for (const cmd of ['git diff --name-only', 'git diff --cached --name-only']) {
+      const out = execSync(cmd, { cwd: rootDir, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+      parts.push(...out.split('\n').map((s) => s.trim()).filter(Boolean));
+    }
+    return Array.from(new Set(parts));
   } catch {
     return [];
   }
@@ -358,7 +388,7 @@ function computeImpact(model, changedFiles) {
   const affectedImportantFiles = model.importantFiles.filter((f) => changed.has(f.file));
   const contractsAffected = model.contracts.filter((c) => changed.has(c.file));
   const runtimeAffected = model.runtimes.filter((runtime) => {
-    if (/worker/i.test(runtime)) return [...changed].some((f) => /worker/i.test(f));
+    if (/worker/i.test(runtime)) return [...changed].some((f) => /worker|runtime/i.test(f));
     if (/browser/i.test(runtime)) return [...changed].some((f) => /ui|browser|react|web/i.test(f));
     if (/electron/i.test(runtime)) return [...changed].some((f) => /electron|desktop/i.test(f));
     return [...changed].some((f) => /server|node|runtime|manifest|index/i.test(f));
@@ -388,7 +418,7 @@ function checkModel(model, kind) {
   if (kind === 'architecture') {
     const issues = [];
     if (!model.runtimes.length) issues.push('No runtimes detected');
-    if (model.uncertainties.length) issues.push(...model.uncertainties);
+    if (model.uncertainties?.length) issues.push(...model.uncertainties);
     return { ok: issues.length === 0, issues };
   }
   if (kind === 'contracts') {
@@ -442,10 +472,14 @@ module.exports = {
   loadModel,
   writeDefaultConfig,
   writeWorkflow,
+  generateWorkflowYaml,
   listChangedFiles,
   computeImpact,
   checkModel,
   verifyEvidence,
   githubReport,
-  modelPath
+  modelPath,
+  loadDecisions,
+  confirmUnderstanding,
+  correctArchitecture
 };

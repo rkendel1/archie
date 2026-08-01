@@ -1,17 +1,29 @@
 {
-  "name": "archie",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "archie-participant",
+  "version": "0.1.0",
+  "description": "Local-first engineering participant MVP runtime + desktop surface",
+  "type": "commonjs",
+  "main": "src/cli.js",
+  "bin": {
+    "participant": "bin/participant",
+    "participant-desktop": "bin/participant-desktop"
+  },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test",
+    "start": "participant-desktop",
+    "analyze": "participant analyze --summary"
   },
-  "repository": {
-    "type": "git",
-    "url": "http://localhost:26831/rkendel1/archie.git"
-  },
-  "keywords": [],
+  "keywords": [
+    "architecture",
+    "graph",
+    "assurance",
+    "ci",
+    "desktop",
+    "participant"
+  ],
   "author": "",
   "license": "ISC",
-  "type": "commonjs"
+  "engines": {
+    "node": ">=18"
+  }
 }
