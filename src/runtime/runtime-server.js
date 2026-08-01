@@ -168,6 +168,24 @@ class RuntimeServer {
         });
       }
 
+      if (req.method === 'POST' && url.pathname === '/v1/changes/proposals') {
+        const body = await parseBody(req);
+        const proposal = this.repositorySession.proposeChange(body);
+        return sendJson(res, 201, { proposal });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/changes/review') {
+        const review = this.repositorySession.reviewActiveChange();
+        if (!review) return sendJson(res, 404, { error: 'No active change session' });
+        return sendJson(res, 200, review);
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/changes/guidance') {
+        const guidance = this.repositorySession.getActiveGuidance();
+        if (!guidance) return sendJson(res, 404, { error: 'No active change session' });
+        return sendJson(res, 200, guidance);
+      }
+
       if (req.method === 'GET' && url.pathname === '/v1/assurance') {
         return sendJson(res, 200, {
           repository_id: this.repositorySession.repositoryId,
@@ -346,6 +364,13 @@ class RuntimeServer {
         const events = this.repositorySession.listAgentEvents(sessionId, since);
         if (!events) return sendJson(res, 404, { error: 'Agent session not found' });
         return sendJson(res, 200, { events });
+      }
+
+      if (req.method === 'GET' && /^\/v1\/context\/changes\/[^/]+$/.test(url.pathname)) {
+        const changeId = url.pathname.split('/')[4];
+        const context = this.repositorySession.getChangeContext(changeId);
+        if (!context) return sendJson(res, 404, { error: 'Change context not found' });
+        return sendJson(res, 200, context);
       }
 
       if (req.method === 'POST' && url.pathname === '/v1/sessions/complete') {

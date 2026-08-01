@@ -111,6 +111,15 @@ test('runtime server supports agent participation workflow', async () => {
   assert.ok(Array.isArray(context.constraints));
   assert.ok(Array.isArray(context.required_evidence));
 
+  const proposal = await request(server.baseUrl, 'POST', '/v1/changes/proposals', {
+    actor: { type: 'agent', id: 'coding-agent-01', name: 'Local Coding Agent' },
+    intent: { summary: 'Add anomaly detection to analytics', desiredOutcome: 'Add anomaly detection to analytics' },
+    files: ['src/runtime-manifest.ts', 'src/analytics-worker.rs'],
+    contracts: ['RuntimeManifest v2'],
+    constraints: { preserveContracts: true, preserveRuntimeCompatibility: true }
+  });
+  assert.ok(proposal.proposal.id.startsWith('proposal_'));
+
   const plan = await request(server.baseUrl, 'POST', `/v1/agent/sessions/${agent.session_id}/plans`, {
     steps: [{ action: 'add_capability', target: 'dataset-insight' }],
     files: ['src/runtime/runtime-manifest.ts']
@@ -139,6 +148,17 @@ test('runtime server supports agent participation workflow', async () => {
 
   const verify = await request(server.baseUrl, 'POST', `/v1/agent/sessions/${agent.session_id}/verify`);
   assert.equal(typeof verify.ok, 'boolean');
+
+  const review = await request(server.baseUrl, 'POST', '/v1/changes/review');
+  assert.ok(['APPROVED', 'CONSTRAINED'].includes(review.status));
+  assert.ok(Array.isArray(review.interventions));
+
+  const guidance = await request(server.baseUrl, 'GET', '/v1/changes/guidance');
+  assert.equal(guidance.status, review.status);
+
+  const changeContext = await request(server.baseUrl, 'GET', `/v1/context/changes/${proposal.proposal.id}`);
+  assert.equal(changeContext.change.id, proposal.proposal.id);
+  assert.ok(Array.isArray(changeContext.requiredEvidence));
 
   const completion = await request(server.baseUrl, 'POST', `/v1/agent/sessions/${agent.session_id}/complete`);
   assert.ok(['ready_for_review', 'review_required'].includes(completion.result));

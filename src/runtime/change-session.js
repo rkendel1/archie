@@ -41,6 +41,9 @@ function createChangeSession(intent) {
     required_evidence: [],
     verification: null,
     completion: null,
+    change_proposal: null,
+    interventions: [],
+    intervention_summary: { open: 0, high: 0, medium: 0, low: 0 },
     constraints: [],
     started_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -62,6 +65,9 @@ function updateChangeSession(session, update = {}) {
   if (Array.isArray(update.requiredEvidence)) session.required_evidence = Array.from(new Set(update.requiredEvidence));
   if (update.verification) session.verification = update.verification;
   if (update.completion) session.completion = update.completion;
+  if (update.changeProposal) session.change_proposal = update.changeProposal;
+  if (Array.isArray(update.interventions)) session.interventions = update.interventions;
+  if (update.interventionSummary) session.intervention_summary = update.interventionSummary;
   session.updated_at = new Date().toISOString();
   return session;
 }
