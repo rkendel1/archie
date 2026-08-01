@@ -9,7 +9,7 @@
     "participant-desktop": "bin/participant-desktop"
   },
   "scripts": {
-    "test": "node --test",
+    "test": "node --test test/*.test.js",
     "start": "participant-desktop",
     "analyze": "participant analyze --summary"
   },

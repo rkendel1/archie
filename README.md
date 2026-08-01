@@ -2,6 +2,15 @@
 
 Local-first engineering participant MVP.
 
+## Buzz-backed change rooms
+
+Archie change sessions now run inside persistent Buzz-style change rooms where participants collaborate as equal parties.
+
+- Buzz dependency is pinned at commit `ac4fa13b8e4d947071d57deb6918dcf12bf74961` via `vendor/buzz`
+- Active room: `GET /v1/changes/active/room`
+- Participants: `GET|POST /v1/changes/active/participants`
+- Advisory contributions: `GET|POST /v1/changes/active/contributions`
+
 ## Product promise
 
 Connect your repository and get a living model of how the system works. As AI and developers change the code, the model updates, explains impact, detects architectural drift, identifies missing evidence, and enforces contracts locally and in CI.

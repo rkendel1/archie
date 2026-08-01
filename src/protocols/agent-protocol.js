@@ -16,11 +16,14 @@ function protocolDescriptor(repositoryId, modelVersion) {
       'change_observation',
       'evidence',
       'verification',
-      'completion'
+      'completion',
+      'change_rooms',
+      'advisory_contributions'
     ],
     services: {
       endpoint: 'http://127.0.0.1:4317/v1/agent',
-      supported_agent_capabilities: SUPPORTED_CAPABILITIES
+      supported_agent_capabilities: SUPPORTED_CAPABILITIES,
+      change_room_endpoint: 'http://127.0.0.1:4317/v1/changes/active/room'
     }
   };
 }

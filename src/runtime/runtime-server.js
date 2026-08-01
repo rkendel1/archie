@@ -168,6 +168,40 @@ class RuntimeServer {
         });
       }
 
+      if (req.method === 'GET' && url.pathname === '/v1/changes/active/room') {
+        const room = this.repositorySession.getActiveChangeRoom();
+        if (!room) return sendJson(res, 404, { error: 'No active change room' });
+        return sendJson(res, 200, { room });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/changes/active/participants') {
+        const room = this.repositorySession.getActiveChangeRoom();
+        if (!room) return sendJson(res, 404, { error: 'No active change room' });
+        return sendJson(res, 200, { participants: room.participants });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/changes/active/participants') {
+        const body = await parseBody(req);
+        const participant = this.repositorySession.addChangeRoomParticipant(body);
+        if (!participant) return sendJson(res, 404, { error: 'No active change room' });
+        return sendJson(res, 201, { participant });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/changes/active/contributions') {
+        const contributions = this.repositorySession.listAdvisoryContributions({
+          kind: url.searchParams.get('kind') || undefined
+        });
+        if (!contributions) return sendJson(res, 404, { error: 'No active change room' });
+        return sendJson(res, 200, { contributions });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/changes/active/contributions') {
+        const body = await parseBody(req);
+        const contribution = this.repositorySession.submitAdvisoryContribution(body);
+        if (!contribution) return sendJson(res, 400, { error: 'Contribution rejected' });
+        return sendJson(res, 201, { contribution });
+      }
+
       if (req.method === 'POST' && url.pathname === '/v1/changes/proposals') {
         const body = await parseBody(req);
         const proposal = this.repositorySession.proposeChange(body);
