@@ -1,0 +1,28 @@
+name: Engineering Assurance
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+jobs:
+  assurance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm ci
+      - name: Build system model
+        run: npx participant analyze --ci
+      - name: Check architecture
+        run: npx participant check architecture
+      - name: Check contracts
+        run: npx participant check contracts
+      - name: Check capability completeness
+        run: npx participant check capabilities
+      - name: Verify required evidence
+        run: npx participant verify --changed
+      - name: Generate assurance report
+        run: npx participant report --format github
