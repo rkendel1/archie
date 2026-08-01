@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
+const http = require('node:http');
 const {
   buildModel,
   saveModel,
@@ -16,6 +17,7 @@ const {
   confirmUnderstanding,
   correctArchitecture
 } = require('./model');
+const { startRuntimeServer } = require('./runtime');
 
 function print(obj) {
   process.stdout.write(`${typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)}\n`);
@@ -32,7 +34,42 @@ function repoRootFromArgs(args) {
   return process.cwd();
 }
 
-function command(args) {
+function argValue(args, name, fallback = null) {
+  const idx = args.indexOf(name);
+  if (idx !== -1 && args[idx + 1]) return args[idx + 1];
+  return fallback;
+}
+
+function runtimePortFromArgs(args) {
+  return Number(argValue(args, '--port', process.env.ARCHIE_RUNTIME_PORT || 4317));
+}
+
+function runtimeRequest({ port, method = 'GET', pathname, body }) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port,
+      path: pathname,
+      method,
+      headers: body ? { 'content-type': 'application/json' } : undefined
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk.toString(); });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data || '{}'));
+        } catch {
+          resolve({ error: data || `Invalid response from runtime API ${pathname}` });
+        }
+      });
+    });
+    req.on('error', reject);
+    if (body) req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+async function command(args) {
   const cmd = args[0];
   const root = repoRootFromArgs(args);
 
@@ -62,6 +99,29 @@ function command(args) {
     } else {
       print({ ok: true, modelPath: modelPath(root), confidence: model.confidence });
     }
+    return;
+  }
+
+  if (cmd === 'serve') {
+    const port = runtimePortFromArgs(args);
+    const server = await startRuntimeServer(root, { port });
+    print([
+      'Archie Live Intelligence Runtime',
+      'Repository:',
+      `  ${root}`,
+      'Initial analysis:',
+      '  Complete',
+      'Model:',
+      `  Version ${server.repositorySession.modelVersion}`,
+      'Repository watch:',
+      '  Active',
+      'Local API:',
+      `  ${server.baseUrl}`,
+      'Event stream:',
+      '  /v1/events',
+      'Active change session:',
+      `  ${server.repositorySession.activeChangeSession?.id || 'none'}`
+    ].join('\n'));
     return;
   }
 
@@ -127,6 +187,74 @@ function command(args) {
     return;
   }
 
+  if (cmd === 'session') {
+    const sub = args[1];
+    const port = runtimePortFromArgs(args);
+    try {
+      if (sub === 'start') {
+        const intent = argValue(args, '--intent', '');
+        const result = await runtimeRequest({ port, method: 'POST', pathname: '/v1/sessions', body: { intent } });
+        print(result);
+        return;
+      }
+      if (sub === 'status') {
+        const result = await runtimeRequest({ port, method: 'GET', pathname: '/v1/changes/active' });
+        print(result);
+        return;
+      }
+      if (sub === 'complete') {
+        const result = await runtimeRequest({ port, method: 'POST', pathname: '/v1/sessions/complete' });
+        print(result);
+        return;
+      }
+      if (sub === 'abandon') {
+        const result = await runtimeRequest({ port, method: 'POST', pathname: '/v1/sessions/abandon' });
+        print(result);
+        return;
+      }
+    } catch {
+      fail(`Runtime API is not available on port ${port}. Start it with: participant serve --port ${port}`);
+    }
+    fail('Usage: participant session <start|status|complete|abandon> [--intent "..."] [--port <n>]');
+  }
+
+  if (cmd === 'status' && args.includes('--live')) {
+    const port = runtimePortFromArgs(args);
+    try {
+      const status = await runtimeRequest({ port, method: 'GET', pathname: '/v1/status' });
+      const intent = status.active_change?.intent?.description || 'Unknown';
+      print([
+        'ARCHIE LIVE STATUS',
+        'Repository',
+        status.repository.id,
+        'Model',
+        `Version ${status.model.version}`,
+        `Updated ${status.model.updated_at || 'unknown'}`,
+        'Repository watch',
+        status.repository_watch === 'active' ? 'Active' : 'Inactive',
+        'Current change',
+        intent,
+        'Changed files',
+        String(status.active_change?.files?.length || 0),
+        'System impact',
+        `${status.active_change?.system_impact?.capabilities || 0} capabilities`,
+        `${status.active_change?.system_impact?.runtimes || 0} runtimes`,
+        `${status.active_change?.system_impact?.contracts || 0} contracts`,
+        `${status.active_change?.system_impact?.important_files || 0} important files`,
+        'Evidence',
+        `${status.evidence.valid} valid`,
+        `${status.evidence.stale} stale`,
+        `${status.evidence.missing} missing`,
+        'Assurance',
+        `${status.assurance.score}%`,
+        status.assurance.status.replace(/_/g, ' ')
+      ].join('\n'));
+      return;
+    } catch {
+      fail(`Runtime API is not available on port ${port}. Start it with: participant serve --port ${port}`);
+    }
+  }
+
   if (cmd === 'report') {
     const formatIdx = args.indexOf('--format');
     const format = formatIdx !== -1 ? args[formatIdx + 1] : 'json';
@@ -163,11 +291,19 @@ function command(args) {
       'participant verify [--repo <path>] [--changed]',
       'participant report [--repo <path>] [--format github|json]',
       'participant confirm [--repo <path>]',
-      'participant correct <text> [--repo <path>]'
+      'participant correct <text> [--repo <path>]',
+      'participant serve [--repo <path>] [--port <n>]',
+      'participant status --live [--port <n>]',
+      'participant session start [--intent "..."] [--port <n>]',
+      'participant session status [--port <n>]',
+      'participant session complete [--port <n>]',
+      'participant session abandon [--port <n>]'
     ]
   });
 }
 
-if (require.main === module) command(process.argv.slice(2));
+if (require.main === module) {
+  command(process.argv.slice(2)).catch((error) => fail(error.message));
+}
 
 module.exports = { command };

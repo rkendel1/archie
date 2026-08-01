@@ -18,6 +18,9 @@ Commands:
 - `participant init`
 - `participant analyze --summary`
 - `participant watch`
+- `participant serve`
+- `participant status --live`
+- `participant session start --intent "..."`
 - `participant check architecture|contracts|capabilities`
 - `participant impact`
 - `participant verify --changed`
