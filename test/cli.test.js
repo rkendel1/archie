@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const http = require('node:http');
+const { execFileSync, spawn } = require('node:child_process');
 
 function makeRepo() {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'archie-cli-'));
@@ -29,4 +30,50 @@ test('participant analyze/check/report commands run for repo', () => {
 
   const report = execFileSync('node', [bin, 'report', '--repo', repo, '--format', 'github'], { encoding: 'utf8' });
   assert.ok(report.includes('ENGINEERING ASSURANCE'));
+});
+
+test('participant session and live status commands work with runtime server', async () => {
+  const repo = makeRepo();
+  const bin = path.join('/home/runner/work/archie/archie', 'bin', 'participant');
+  const port = String(44000 + Math.floor(Math.random() * 1000));
+
+  const runtime = spawn('node', [bin, 'serve', '--repo', repo, '--port', port], {
+    stdio: 'ignore'
+  });
+
+  await new Promise((resolve, reject) => {
+    let attempts = 0;
+    const timer = setInterval(() => {
+      attempts += 1;
+      const req = http.get(`http://127.0.0.1:${port}/health`, (res) => {
+        res.resume();
+        if (res.statusCode === 200) {
+          clearInterval(timer);
+          resolve();
+        }
+      });
+      req.on('error', () => {
+        if (attempts >= 40) {
+          clearInterval(timer);
+          reject(new Error('Runtime health endpoint did not become available'));
+        }
+      });
+    }, 50);
+  });
+
+  const start = execFileSync('node', [bin, 'session', 'start', '--port', port, '--intent', 'Implement runtime API'], { encoding: 'utf8' });
+  assert.ok(start.includes('"status": "active"'));
+
+  const status = execFileSync('node', [bin, 'status', '--live', '--port', port], { encoding: 'utf8' });
+  assert.ok(status.includes('ARCHIE LIVE STATUS'));
+
+  const complete = execFileSync('node', [bin, 'session', 'complete', '--port', port], { encoding: 'utf8' });
+  assert.ok(complete.includes('"status": "completed"'));
+
+  await new Promise((resolve) => {
+    const req = http.request(`http://127.0.0.1:${port}/v1/runtime/stop`, { method: 'POST' }, () => resolve());
+    req.on('error', () => resolve());
+    req.end();
+  });
+  runtime.kill('SIGTERM');
 });
