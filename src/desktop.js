@@ -488,6 +488,7 @@ function workspaceFor(project, route = '/overview') {
       participants: project.summary.activeParticipants,
       interventions: project.summary.openInterventions,
       evidence: changes.filter((change) => change.evidence.done < change.evidence.required).length,
+      reviewQueue: buildReviewQueue(changes).summary.requiresDecision,
       notifications: unreadNotifications
     },
     sections: {
@@ -510,6 +511,7 @@ function workspaceFor(project, route = '/overview') {
       participants,
       activity: ensureArray(project.workspace.activity),
       notifications: ensureArray(project.workspace.notifications),
+      reviewQueue: buildReviewQueue(changes),
       nextImplementations: buildNextImplementations(project),
       activeChange,
       activeRoom,
@@ -553,6 +555,34 @@ function buildEngineeringContext(change) {
       required: change.verification.required,
       completed: change.verification.completed,
       completion: change.completion.ready ? 'Ready' : 'Not ready'
+    },
+    reviewQueue: buildReviewQueue([change]).summary
+  };
+}
+
+function buildReviewQueue(changes = []) {
+  const items = changes.map((change) => {
+    const hasContractRisk = change.constraints.some((entry) => /contract/i.test(entry));
+    const hasRuntimeRisk = change.constraints.some((entry) => /runtime/i.test(entry));
+    const hasHighIntervention = (change.interventions?.high || 0) > 0;
+    let risk = 'LOW';
+    if (hasHighIntervention && hasContractRisk && hasRuntimeRisk) risk = 'CRITICAL';
+    else if (hasHighIntervention || hasContractRisk) risk = 'HIGH';
+    else if ((change.interventions?.medium || 0) > 0 || !change.completion.ready) risk = 'MEDIUM';
+    return {
+      changeId: change.id,
+      title: change.title,
+      risk,
+      requiresDecision: risk === 'CRITICAL' || risk === 'HIGH'
+    };
+  });
+  return {
+    items,
+    summary: {
+      requiresDecision: items.filter((entry) => entry.requiresDecision).length,
+      highRisk: items.filter((entry) => ['HIGH', 'CRITICAL'].includes(entry.risk)).length,
+      readyForCompletion: items.filter((entry) => entry.risk === 'LOW').length,
+      lowRisk: items.filter((entry) => entry.risk === 'LOW').length
     }
   };
 }
@@ -646,6 +676,7 @@ function page() {
       <div class="nav-item">Participants <span id="badgeParticipants" class="badge">0</span></div>
       <div class="nav-item">Interventions <span id="badgeInterventions" class="badge">0</span></div>
       <div class="nav-item">Evidence <span id="badgeEvidence" class="badge">0</span></div>
+      <div class="nav-item">Review Queue <span id="badgeReviewQueue" class="badge">0</span></div>
       <div class="nav-item">Notifications <span id="badgeNotifications" class="badge">0</span></div>
     </aside>
     <main class="panel" style="resize:none;">
@@ -753,6 +784,7 @@ async function loadWorkspace() {
   el('badgeParticipants').textContent = data.navigation.participants;
   el('badgeInterventions').textContent = data.navigation.interventions;
   el('badgeEvidence').textContent = data.navigation.evidence;
+  el('badgeReviewQueue').textContent = data.navigation.reviewQueue;
   el('badgeNotifications').textContent = data.navigation.notifications;
 
   renderCard('changes', data.sections.changes, (change) =>
@@ -989,6 +1021,10 @@ function startDesktopServer(optionsOrPort = Number(process.env.PORT || 43111)) {
 
       if (req.method === 'GET' && rest === 'next-implementations') {
         return sendJson(res, 200, { recommendations: buildNextImplementations(project) });
+      }
+
+      if (req.method === 'GET' && rest === 'review-queue') {
+        return sendJson(res, 200, { reviewQueue: buildReviewQueue(project.workspace.changes) });
       }
     }
 

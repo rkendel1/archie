@@ -40,6 +40,7 @@ const {
 } = require('./evidence-state');
 const { computeGraphDelta } = require('./graph-updater');
 const { analyzeChange } = require('./incremental-analyzer');
+const { ControlPlaneState, runControlPlane } = require('../control-plane');
 
 class RepositorySession {
   constructor(rootDir) {
@@ -59,6 +60,8 @@ class RepositorySession {
     this.watcher = null;
     this.pendingFiles = new Set();
     this.flushTimer = null;
+    this.controlPlaneState = new ControlPlaneState();
+    this.controlPlane = null;
   }
 
   initialize() {
@@ -72,6 +75,7 @@ class RepositorySession {
     this.updatedAt = new Date().toISOString();
     this.evidenceState = buildInitialEvidenceState(this.model);
     this.assurance = this.computeAssurance(this.model.confidence, this.evidenceState);
+    this.refreshControlPlane();
 
     this.eventBus.publish('model.initialized', {
       repository_id: this.repositoryId,
@@ -126,6 +130,7 @@ class RepositorySession {
     });
     updateChangeSession(this.activeChangeSession, { changeRoom: room });
     this.changeSessions.set(this.activeChangeSession.id, this.activeChangeSession);
+    this.refreshControlPlane();
     this.eventBus.publish('change-session.updated', this.activeChangeSession, this.eventContext());
     this.eventBus.publish('change-room.updated', room, this.eventContext());
     return this.activeChangeSession;
@@ -134,6 +139,7 @@ class RepositorySession {
   setActiveSessionIntent(id, intent) {
     if (!this.activeChangeSession || this.activeChangeSession.id !== id) return null;
     setSessionIntent(this.activeChangeSession, intent);
+    this.refreshControlPlane();
     this.eventBus.publish('change-session.updated', this.activeChangeSession, this.eventContext());
     return this.activeChangeSession;
   }
@@ -145,6 +151,7 @@ class RepositorySession {
       const room = this.buzzAdapter.setRoomStatus(this.activeChangeSession.change_room.id, 'completed');
       updateChangeSession(this.activeChangeSession, { changeRoom: room });
     }
+    this.refreshControlPlane();
     this.eventBus.publish('change-session.updated', this.activeChangeSession, this.eventContext());
     return this.activeChangeSession;
   }
@@ -156,6 +163,7 @@ class RepositorySession {
       const room = this.buzzAdapter.setRoomStatus(this.activeChangeSession.change_room.id, 'archived');
       updateChangeSession(this.activeChangeSession, { changeRoom: room });
     }
+    this.refreshControlPlane();
     this.eventBus.publish('change-session.updated', this.activeChangeSession, this.eventContext());
     return this.activeChangeSession;
   }
@@ -211,6 +219,7 @@ class RepositorySession {
       unexpectedFiles: declaration.unexpected_files
     });
     this.refreshInterventions(impact);
+    this.refreshControlPlane();
 
     this.eventBus.publish('analysis.completed', {
       mode: analysis.mode,
@@ -291,6 +300,7 @@ class RepositorySession {
       }
     });
     this.eventBus.publish('change.proposed', { proposal }, this.eventContext());
+    this.refreshControlPlane();
     return proposal;
   }
 
@@ -324,6 +334,7 @@ class RepositorySession {
       suggested_implementation_order: buildImplementationOrder(impact, proposal),
       interventions: orderedInterventions
     };
+    this.refreshControlPlane();
     this.eventBus.publish('change.reviewed', review, this.eventContext());
     return review;
   }
@@ -354,6 +365,7 @@ class RepositorySession {
     this.updatedAt = new Date().toISOString();
     this.evidenceState = buildInitialEvidenceState(model);
     this.assurance = this.computeAssurance(model.confidence, this.evidenceState);
+    this.refreshControlPlane();
 
     this.eventBus.publish('graph.updated', {
       previous_version: previousVersion,
@@ -370,6 +382,58 @@ class RepositorySession {
   verifyActiveEvidence() {
     const changedFiles = this.activeChangeSession?.files || [];
     return verifyEvidence(this.model, changedFiles);
+  }
+
+  refreshControlPlane() {
+    this.controlPlane = runControlPlane({
+      model: this.model,
+      activeChangeSession: this.activeChangeSession,
+      changeSessions: Array.from(this.changeSessions.values()),
+      assurance: this.assurance,
+      evidence: this.evidenceState,
+      verification: this.activeChangeSession?.verification || null,
+      architectureIntent: this.model?.userDecisions ? {
+        runtimeRules: [],
+        ownershipRules: [],
+        decisions: this.model.userDecisions
+      } : {},
+      state: this.controlPlaneState,
+      repositoryRevision: String(this.modelVersion || 0)
+    });
+    this.controlPlaneState.setSnapshot(this.controlPlane);
+    return this.controlPlane;
+  }
+
+  getControlPlaneSnapshot() {
+    if (!this.controlPlane) this.refreshControlPlane();
+    return this.controlPlane;
+  }
+
+  listWorkClaims(changeId = null) {
+    return this.controlPlaneState.workClaims.list(changeId);
+  }
+
+  declareWorkClaim(input = {}) {
+    const active = this.activeChangeSession || this.startChangeSession(input.intent || '');
+    const claim = this.controlPlaneState.workClaims.declare({
+      ...input,
+      changeId: input.changeId || active.id
+    });
+    this.refreshControlPlane();
+    this.eventBus.publish('coordination.work-claim.declared', { claim }, this.eventContext());
+    return claim;
+  }
+
+  createDecision(input = {}) {
+    const active = this.activeChangeSession || this.startChangeSession(input.title || '');
+    const record = this.controlPlaneState.decisions.create({
+      ...input,
+      projectId: this.repositoryId,
+      changeId: input.changeId || active.id
+    });
+    this.refreshControlPlane();
+    this.eventBus.publish('decision.recorded', { decision: record }, this.eventContext());
+    return record;
   }
 
   discoverAgentParticipation() {
@@ -434,6 +498,7 @@ class RepositorySession {
       }
     });
     this.eventBus.publish('agent.intent.declared', { session_id: session.id, intent: session.intent }, this.eventContext());
+    this.refreshControlPlane();
     return session;
   }
 
@@ -452,6 +517,7 @@ class RepositorySession {
       requiredEvidence: context.required_evidence
     });
     this.eventBus.publish('agent.context.updated', { session_id: session.id, context }, this.eventContext());
+    this.refreshControlPlane();
     return context;
   }
 
@@ -475,6 +541,7 @@ class RepositorySession {
       plan_id: plan.id,
       review: plan.review
     }, this.eventContext());
+    this.refreshControlPlane();
     return plan;
   }
 
@@ -500,6 +567,7 @@ class RepositorySession {
       session_id: session.id,
       declaration
     }, this.eventContext());
+    this.refreshControlPlane();
     return declaration;
   }
 
@@ -518,6 +586,7 @@ class RepositorySession {
       }
     });
     this.eventBus.publish('agent.change.observed', { session_id: session.id, implementation: report }, this.eventContext());
+    this.refreshControlPlane();
     return report;
   }
 
@@ -539,6 +608,7 @@ class RepositorySession {
       session_id: session.id,
       evidence: report.classification
     }, this.eventContext());
+    this.refreshControlPlane();
     return report;
   }
 
@@ -551,6 +621,7 @@ class RepositorySession {
       session_id: session.id,
       verification
     }, this.eventContext());
+    this.refreshControlPlane();
     return verification;
   }
 
@@ -576,6 +647,7 @@ class RepositorySession {
       session_id: session.id,
       completion
     }, this.eventContext());
+    this.refreshControlPlane();
     return completion;
   }
 
@@ -602,6 +674,7 @@ class RepositorySession {
         interventions: evaluation.interventions
       }, this.eventContext());
     }
+    this.refreshControlPlane();
     return evaluation;
   }
 
@@ -629,6 +702,7 @@ class RepositorySession {
     const participant = this.buzzAdapter.upsertParticipant(room.id, input);
     updateChangeSession(this.activeChangeSession, { changeRoom: this.buzzAdapter.getRoom(room.id) });
     this.eventBus.publish('change-room.updated', room, this.eventContext());
+    this.refreshControlPlane();
     return participant;
   }
 
@@ -642,6 +716,7 @@ class RepositorySession {
       changeRoom: this.buzzAdapter.getRoom(room.id),
       advisoryContributions: contributions
     });
+    this.refreshControlPlane();
     this.eventBus.publish('advisory.contribution.published', { contribution }, this.eventContext());
     return contribution;
   }
@@ -679,7 +754,8 @@ class RepositorySession {
       repository_watch: this.watcher ? 'active' : 'inactive',
       active_change: this.activeChangeSession,
       assurance: this.assurance,
-      evidence: summarizeEvidence(this.evidenceState)
+      evidence: summarizeEvidence(this.evidenceState),
+      control_plane: this.getControlPlaneSnapshot()
     };
   }
 
@@ -692,7 +768,8 @@ class RepositorySession {
       model: this.model,
       change_session: this.activeChangeSession,
       evidence: summarizeEvidence(this.evidenceState),
-      assurance: this.assurance
+      assurance: this.assurance,
+      control_plane: this.getControlPlaneSnapshot()
     };
   }
 

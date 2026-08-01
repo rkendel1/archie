@@ -236,6 +236,38 @@ class RuntimeServer {
         });
       }
 
+      if (req.method === 'GET' && url.pathname === '/v1/control-plane') {
+        return sendJson(res, 200, {
+          repository_id: this.repositorySession.repositoryId,
+          model_version: this.repositorySession.modelVersion,
+          control_plane: this.repositorySession.getControlPlaneSnapshot()
+        });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/control-plane/review-queue') {
+        return sendJson(res, 200, {
+          review_queue: this.repositorySession.getControlPlaneSnapshot().reviewQueue
+        });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/control-plane/work-claims') {
+        return sendJson(res, 200, {
+          work_claims: this.repositorySession.listWorkClaims(url.searchParams.get('changeId') || null)
+        });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/control-plane/work-claims') {
+        const body = await parseBody(req);
+        const claim = this.repositorySession.declareWorkClaim(body);
+        return sendJson(res, 201, { claim });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/control-plane/decisions') {
+        const body = await parseBody(req);
+        const decision = this.repositorySession.createDecision(body);
+        return sendJson(res, 201, { decision });
+      }
+
       if (req.method === 'GET' && url.pathname === '/v1/status') {
         return sendJson(res, 200, this.repositorySession.getStatus());
       }

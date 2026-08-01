@@ -127,6 +127,43 @@ test('runtime server supports agent participation workflow', async () => {
   });
   assert.ok(proposal.proposal.id.startsWith('proposal_'));
 
+  const claimA = await request(server.baseUrl, 'POST', '/v1/control-plane/work-claims', {
+    participantId: 'coding-agent-01',
+    mode: 'implementing',
+    intent: 'Update runtime manifest contract flow',
+    scope: {
+      files: ['src/runtime-manifest.ts'],
+      capabilities: ['analytics.execution'],
+      contracts: ['RuntimeManifest'],
+      runtimes: ['Node Development Runtime']
+    }
+  });
+  assert.ok(claimA.claim.id.startsWith('claim_'));
+
+  const claimB = await request(server.baseUrl, 'POST', '/v1/control-plane/work-claims', {
+    participantId: 'coding-agent-02',
+    mode: 'implementing',
+    intent: 'Adjust runtime manifest compatibility',
+    scope: {
+      files: ['src/runtime-manifest.ts'],
+      capabilities: ['analytics.execution'],
+      contracts: ['RuntimeManifest'],
+      runtimes: ['Node Development Runtime']
+    }
+  });
+  assert.ok(claimB.claim.id.startsWith('claim_'));
+
+  const decision = await request(server.baseUrl, 'POST', '/v1/control-plane/decisions', {
+    title: 'Keep analytics execution in worker runtime',
+    decision: 'Use existing runtime owner for analytics execution',
+    alternatives: ['Add TypeScript runtime path'],
+    participants: ['You', 'Archie', 'coding-agent-01'],
+    evidence: ['runtime-topology', 'contract-registry'],
+    affectedSystem: { capabilities: ['analytics.execution'], runtimes: ['WASM Worker Runtime'], contracts: ['RuntimeManifest'] },
+    status: 'accepted'
+  });
+  assert.ok(decision.decision.id.startsWith('decision_'));
+
   const plan = await request(server.baseUrl, 'POST', `/v1/agent/sessions/${agent.session_id}/plans`, {
     steps: [{ action: 'add_capability', target: 'dataset-insight' }],
     files: ['src/runtime/runtime-manifest.ts']
@@ -159,6 +196,14 @@ test('runtime server supports agent participation workflow', async () => {
   const review = await request(server.baseUrl, 'POST', '/v1/changes/review');
   assert.ok(['APPROVED', 'CONSTRAINED'].includes(review.status));
   assert.ok(Array.isArray(review.interventions));
+
+  const controlPlane = await request(server.baseUrl, 'GET', '/v1/control-plane');
+  assert.ok(Array.isArray(controlPlane.control_plane.coordination.claims));
+  assert.ok(controlPlane.control_plane.coordination.conflicts.some((entry) => entry.type === 'WORK_CONFLICT'));
+  assert.ok(controlPlane.control_plane.decisions.some((entry) => entry.id === decision.decision.id));
+
+  const reviewQueue = await request(server.baseUrl, 'GET', '/v1/control-plane/review-queue');
+  assert.equal(typeof reviewQueue.review_queue.summary.requiresDecision, 'number');
 
   const guidance = await request(server.baseUrl, 'GET', '/v1/changes/guidance');
   assert.equal(guidance.status, review.status);
