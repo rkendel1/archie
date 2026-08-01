@@ -5,6 +5,7 @@
   "type": "commonjs",
   "main": "src/cli.js",
   "bin": {
+    "archie": "bin/participant",
     "participant": "bin/participant",
     "participant-desktop": "bin/participant-desktop"
   },
