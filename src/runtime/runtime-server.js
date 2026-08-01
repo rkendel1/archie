@@ -1,6 +1,8 @@
 const http = require('node:http');
 const path = require('node:path');
 const { RepositorySession } = require('./repository-session');
+const { SUPPORTED_CAPABILITIES } = require('../agents/agent-capabilities');
+const { formatContextMarkdown } = require('../protocols/agent-context');
 
 function sendJson(res, code, body) {
   res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' });
@@ -55,6 +57,32 @@ class RuntimeServer {
           repository_id: this.repositorySession.repositoryId,
           model_version: this.repositorySession.modelVersion,
           repository_watch: this.repositorySession.watcher ? 'active' : 'inactive'
+        });
+      }
+
+      if (req.method === 'GET' && url.pathname === '/.well-known/archie') {
+        return sendJson(res, 200, this.repositorySession.discoverAgentParticipation());
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/agent/protocol') {
+        return sendJson(res, 200, this.repositorySession.discoverAgentParticipation());
+      }
+
+      if (req.method === 'GET' && url.pathname === '/v1/agent/capabilities') {
+        return sendJson(res, 200, {
+          protocol_version: '1.0',
+          repository_id: this.repositorySession.repositoryId,
+          capabilities: SUPPORTED_CAPABILITIES,
+          services: [
+            'intent',
+            'context',
+            'plan_review',
+            'constraints',
+            'change_observation',
+            'evidence',
+            'verification',
+            'completion'
+          ]
         });
       }
 
@@ -194,10 +222,130 @@ class RuntimeServer {
 
       if (req.method === 'POST' && /^\/v1\/sessions\/[^/]+\/intent$/.test(url.pathname)) {
         const body = await parseBody(req);
-        const [, , , sessionId] = url.pathname.split('/');
+        const sessionId = url.pathname.split('/')[4];
         const session = this.repositorySession.setActiveSessionIntent(sessionId, body.intent);
         if (!session) return sendJson(res, 404, { error: 'Active change session not found' });
         return sendJson(res, 200, session);
+      }
+
+      if (req.method === 'POST' && url.pathname === '/v1/agent/sessions') {
+        const body = await parseBody(req);
+        const session = this.repositorySession.registerAgent(body);
+        return sendJson(res, 201, session);
+      }
+
+      if (req.method === 'GET' && /^\/v1\/agent\/sessions\/[^/]+$/.test(url.pathname)) {
+        const sessionId = url.pathname.split('/')[4];
+        const agentSession = this.repositorySession.getAgentSession(sessionId);
+        if (!agentSession) return sendJson(res, 404, { error: 'Agent session not found' });
+        return sendJson(res, 200, {
+          ...agentSession,
+          active_change_session: this.repositorySession.activeChangeSession
+        });
+      }
+
+      if (req.method === 'POST' && /^\/v1\/agent\/sessions\/[^/]+\/intent$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const sessionId = url.pathname.split('/')[4];
+        const session = this.repositorySession.submitAgentIntent(sessionId, body.intent || body);
+        if (!session) return sendJson(res, 404, { error: 'Agent session not found' });
+        return sendJson(res, 200, session);
+      }
+
+      if (req.method === 'GET' && /^\/v1\/agent\/sessions\/[^/]+\/context$/.test(url.pathname)) {
+        const sessionId = url.pathname.split('/')[4];
+        const detail = url.searchParams.get('detail') || 'focused';
+        const format = (url.searchParams.get('format') || 'json').toLowerCase();
+        const context = this.repositorySession.getAgentContext(sessionId, { detail });
+        if (!context) return sendJson(res, 404, { error: 'Agent session not found' });
+        if (format === 'markdown') {
+          res.writeHead(200, { 'content-type': 'text/markdown; charset=utf-8' });
+          res.end(formatContextMarkdown(context));
+          return;
+        }
+        if (format === 'summary') {
+          return sendJson(res, 200, {
+            intent: context.intent,
+            constraints: context.constraints.map((entry) => entry.statement),
+            important_files: context.important_files.map((entry) => entry.path),
+            required_evidence: context.required_evidence
+          });
+        }
+        if (format === 'yaml') {
+          res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+          res.end(toYaml(context));
+          return;
+        }
+        return sendJson(res, 200, context);
+      }
+
+      if (req.method === 'POST' && /^\/v1\/agent\/sessions\/[^/]+\/plans$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const sessionId = url.pathname.split('/')[4];
+        const plan = this.repositorySession.submitAgentPlan(sessionId, body);
+        if (!plan) return sendJson(res, 404, { error: 'Agent session not found' });
+        return sendJson(res, 201, plan);
+      }
+
+      if (req.method === 'GET' && /^\/v1\/agent\/sessions\/[^/]+\/plans$/.test(url.pathname)) {
+        const sessionId = url.pathname.split('/')[4];
+        const plans = this.repositorySession.listAgentPlans(sessionId);
+        if (!plans) return sendJson(res, 404, { error: 'Agent session not found' });
+        return sendJson(res, 200, { plans });
+      }
+
+      if (req.method === 'GET' && /^\/v1\/agent\/sessions\/[^/]+\/plans\/[^/]+$/.test(url.pathname)) {
+        const sessionId = url.pathname.split('/')[4];
+        const planId = url.pathname.split('/')[6];
+        const plan = this.repositorySession.getAgentPlan(sessionId, planId);
+        if (!plan) return sendJson(res, 404, { error: 'Plan not found' });
+        return sendJson(res, 200, plan);
+      }
+
+      if (req.method === 'POST' && /^\/v1\/agent\/sessions\/[^/]+\/files$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const sessionId = url.pathname.split('/')[4];
+        const declaration = this.repositorySession.declareAgentFiles(sessionId, body.files || []);
+        if (!declaration) return sendJson(res, 404, { error: 'Agent session not found' });
+        return sendJson(res, 200, declaration);
+      }
+
+      if (req.method === 'POST' && /^\/v1\/agent\/sessions\/[^/]+\/implementation$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const sessionId = url.pathname.split('/')[4];
+        const report = this.repositorySession.submitImplementationReport(sessionId, body);
+        if (!report) return sendJson(res, 404, { error: 'Agent session not found' });
+        return sendJson(res, 200, report);
+      }
+
+      if (req.method === 'POST' && /^\/v1\/agent\/sessions\/[^/]+\/evidence$/.test(url.pathname)) {
+        const body = await parseBody(req);
+        const sessionId = url.pathname.split('/')[4];
+        const report = this.repositorySession.submitEvidenceReport(sessionId, body);
+        if (!report) return sendJson(res, 404, { error: 'Agent session not found' });
+        return sendJson(res, 200, report);
+      }
+
+      if (req.method === 'POST' && /^\/v1\/agent\/sessions\/[^/]+\/verify$/.test(url.pathname)) {
+        const sessionId = url.pathname.split('/')[4];
+        const verification = this.repositorySession.verifyAgentChange(sessionId);
+        if (!verification) return sendJson(res, 404, { error: 'Agent session not found' });
+        return sendJson(res, 200, verification);
+      }
+
+      if (req.method === 'POST' && /^\/v1\/agent\/sessions\/[^/]+\/complete$/.test(url.pathname)) {
+        const sessionId = url.pathname.split('/')[4];
+        const completion = this.repositorySession.completeAgentChange(sessionId);
+        if (!completion) return sendJson(res, 404, { error: 'Agent session not found' });
+        return sendJson(res, 200, completion);
+      }
+
+      if (req.method === 'GET' && /^\/v1\/agent\/sessions\/[^/]+\/events$/.test(url.pathname)) {
+        const sessionId = url.pathname.split('/')[4];
+        const since = Number(url.searchParams.get('since') || 0);
+        const events = this.repositorySession.listAgentEvents(sessionId, since);
+        if (!events) return sendJson(res, 404, { error: 'Agent session not found' });
+        return sendJson(res, 200, { events });
       }
 
       if (req.method === 'POST' && url.pathname === '/v1/sessions/complete') {
@@ -275,3 +423,16 @@ module.exports = {
   RuntimeServer,
   startRuntimeServer
 };
+
+function toYaml(value, indent = 0) {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  const pad = ' '.repeat(indent);
+  if (Array.isArray(value)) {
+    return value.map((item) => `${pad}- ${typeof item === 'object' ? `\n${toYaml(item, indent + 2)}` : toYaml(item, 0)}`).join('\n');
+  }
+  return Object.entries(value).map(([key, entry]) => {
+    if (entry && typeof entry === 'object') return `${pad}${key}:\n${toYaml(entry, indent + 2)}`;
+    return `${pad}${key}: ${toYaml(entry, 0)}`;
+  }).join('\n');
+}

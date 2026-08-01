@@ -1,5 +1,15 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { AgentRegistry } = require('../agents/agent-registry');
+const { mapEventType } = require('../agents/agent-events');
+const { protocolDescriptor } = require('../protocols/agent-protocol');
+const { understandIntent } = require('../participation/intent-service');
+const { composeContext } = require('../participation/context-composer');
+const { submitPlan } = require('../participation/plan-service');
+const { evaluateDeclaredFiles } = require('../participation/change-coordinator');
+const { observeImplementation } = require('../participation/implementation-observer');
+const { classifyEvidence } = require('../participation/evidence-coordinator');
+const { reviewCompletion } = require('../participation/completion-engine');
 const {
   buildModel,
   saveModel,
@@ -11,6 +21,11 @@ const {
   createChangeSession,
   updateChangeSession,
   setSessionIntent,
+  bindAgentSession,
+  addPlan,
+  getPlan,
+  addImplementationReport,
+  addEvidenceReport,
   completeChangeSession,
   abandonChangeSession
 } = require('./change-session');
@@ -31,7 +46,9 @@ class RepositorySession {
     this.previousVersion = null;
     this.updatedAt = null;
     this.eventBus = new RuntimeEventBus(this.repositoryId);
+    this.agentRegistry = new AgentRegistry(this.repositoryId);
     this.activeChangeSession = null;
+    this.changeSessions = new Map();
     this.evidenceState = [];
     this.assurance = { score: 0, status: 'in_progress' };
     this.watcher = null;
@@ -87,6 +104,7 @@ class RepositorySession {
 
   startChangeSession(intent) {
     this.activeChangeSession = createChangeSession(intent);
+    this.changeSessions.set(this.activeChangeSession.id, this.activeChangeSession);
     this.eventBus.publish('change-session.updated', this.activeChangeSession, this.eventContext());
     return this.activeChangeSession;
   }
@@ -153,6 +171,14 @@ class RepositorySession {
       },
       evidence: evidenceSummary,
       assurance: this.assurance
+    });
+    const declaration = evaluateDeclaredFiles({
+      declaredFiles: this.activeChangeSession.declared_files,
+      observedFiles: this.activeChangeSession.files
+    });
+    updateChangeSession(this.activeChangeSession, {
+      declaredFiles: declaration.declared_files,
+      unexpectedFiles: declaration.unexpected_files
     });
 
     this.eventBus.publish('analysis.completed', {
@@ -237,6 +263,155 @@ class RepositorySession {
   verifyActiveEvidence() {
     const changedFiles = this.activeChangeSession?.files || [];
     return verifyEvidence(this.model, changedFiles);
+  }
+
+  discoverAgentParticipation() {
+    return protocolDescriptor(this.repositoryId, this.modelVersion);
+  }
+
+  registerAgent(input = {}) {
+    const session = this.agentRegistry.register(input);
+    this.eventBus.publish('agent.session.created', session, this.eventContext());
+    return session;
+  }
+
+  getAgentSession(sessionId) {
+    return this.agentRegistry.get(sessionId);
+  }
+
+  ensureAgentChangeSession(sessionId) {
+    const agentSession = this.getAgentSession(sessionId);
+    if (!agentSession) return null;
+    if (!this.activeChangeSession || this.activeChangeSession.status !== 'active') {
+      this.startChangeSession();
+    }
+    bindAgentSession(this.activeChangeSession, sessionId);
+    return this.activeChangeSession;
+  }
+
+  submitAgentIntent(sessionId, intentInput = {}) {
+    const session = this.ensureAgentChangeSession(sessionId);
+    if (!session) return null;
+    const understood = understandIntent(intentInput, this.model);
+    setSessionIntent(session, understood.outcome || intentInput.outcome || '');
+    session.intent = { ...session.intent, ...understood };
+    this.eventBus.publish('agent.intent.declared', { session_id: session.id, intent: session.intent }, this.eventContext());
+    return session;
+  }
+
+  getAgentContext(sessionId, options = {}) {
+    const session = this.ensureAgentChangeSession(sessionId);
+    if (!session) return null;
+    const context = composeContext({
+      repositoryId: this.repositoryId,
+      modelVersion: this.modelVersion,
+      model: this.model,
+      intent: session.intent,
+      detail: options.detail || 'focused'
+    });
+    updateChangeSession(session, {
+      constraints: context.constraints,
+      requiredEvidence: context.required_evidence
+    });
+    this.eventBus.publish('agent.context.updated', { session_id: session.id, context }, this.eventContext());
+    return context;
+  }
+
+  submitAgentPlan(sessionId, planInput = {}) {
+    const session = this.ensureAgentChangeSession(sessionId);
+    if (!session) return null;
+    const context = this.getAgentContext(sessionId, { detail: planInput.detail || 'focused' });
+    const plan = submitPlan(planInput, context);
+    addPlan(session, plan);
+    this.eventBus.publish('agent.plan.reviewed', {
+      session_id: session.id,
+      plan_id: plan.id,
+      review: plan.review
+    }, this.eventContext());
+    return plan;
+  }
+
+  getAgentPlan(sessionId, planId) {
+    const session = this.ensureAgentChangeSession(sessionId);
+    if (!session) return null;
+    return getPlan(session, planId);
+  }
+
+  listAgentPlans(sessionId) {
+    const session = this.ensureAgentChangeSession(sessionId);
+    if (!session) return null;
+    return session.plans;
+  }
+
+  declareAgentFiles(sessionId, files = []) {
+    const session = this.ensureAgentChangeSession(sessionId);
+    if (!session) return null;
+    updateChangeSession(session, { declaredFiles: files });
+    const declaration = evaluateDeclaredFiles({ declaredFiles: session.declared_files, observedFiles: session.files });
+    updateChangeSession(session, { unexpectedFiles: declaration.unexpected_files });
+    this.eventBus.publish('agent.change.observed', {
+      session_id: session.id,
+      declaration
+    }, this.eventContext());
+    return declaration;
+  }
+
+  submitImplementationReport(sessionId, input = {}) {
+    const session = this.ensureAgentChangeSession(sessionId);
+    if (!session) return null;
+    const report = observeImplementation(input, session.files);
+    addImplementationReport(session, report);
+    this.eventBus.publish('agent.change.observed', { session_id: session.id, implementation: report }, this.eventContext());
+    return report;
+  }
+
+  submitEvidenceReport(sessionId, input = {}) {
+    const session = this.ensureAgentChangeSession(sessionId);
+    if (!session) return null;
+    const report = classifyEvidence(input, session.required_evidence || []);
+    addEvidenceReport(session, report);
+    this.eventBus.publish('agent.evidence.required', {
+      session_id: session.id,
+      evidence: report.classification
+    }, this.eventContext());
+    return report;
+  }
+
+  verifyAgentChange(sessionId) {
+    const session = this.ensureAgentChangeSession(sessionId);
+    if (!session) return null;
+    const verification = this.verifyActiveEvidence();
+    updateChangeSession(session, { verification });
+    this.eventBus.publish('agent.verification.completed', {
+      session_id: session.id,
+      verification
+    }, this.eventContext());
+    return verification;
+  }
+
+  completeAgentChange(sessionId) {
+    const session = this.ensureAgentChangeSession(sessionId);
+    if (!session) return null;
+    const verification = session.verification || this.verifyAgentChange(sessionId);
+    const completion = reviewCompletion({ session, verification });
+    updateChangeSession(session, { completion });
+    const state = completion.result === 'ready_for_review' ? 'completed' : 'review_required';
+    if (state === 'completed') completeChangeSession(session);
+    else session.status = state;
+    this.eventBus.publish('agent.completion.reviewed', {
+      session_id: session.id,
+      completion
+    }, this.eventContext());
+    return completion;
+  }
+
+  listAgentEvents(sessionId, sinceSequence = 0) {
+    const session = this.ensureAgentChangeSession(sessionId);
+    if (!session) return null;
+    return this.eventBus
+      .list(sinceSequence)
+      .filter((event) => !event.change_session_id || event.change_session_id === session.id)
+      .map((event) => ({ ...event, type: mapEventType(event.type), agent_session_id: session.agent_session_id }));
   }
 
   getStatus() {

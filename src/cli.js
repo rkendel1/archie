@@ -19,6 +19,8 @@ const {
   projectModelByLanguage
 } = require('./model');
 const { startRuntimeServer } = require('./runtime');
+const { startLocalAgent } = require('./integrations/agent-adapter');
+const { formatContextMarkdown } = require('./protocols/agent-context');
 
 function print(obj) {
   process.stdout.write(`${typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)}\n`);
@@ -61,6 +63,24 @@ function runtimeRequest({ port, method = 'GET', pathname, body }) {
           resolve(JSON.parse(data || '{}'));
         } catch {
           resolve({ error: data || `Invalid response from runtime API ${pathname}` });
+        }
+
+        function readJsonFile(filePath) {
+          const abs = path.resolve(filePath);
+          return JSON.parse(fs.readFileSync(abs, 'utf8'));
+        }
+
+        function toYaml(value, indent = 0) {
+          if (value === null || value === undefined) return 'null';
+          if (typeof value !== 'object') return JSON.stringify(value);
+          const pad = ' '.repeat(indent);
+          if (Array.isArray(value)) {
+            return value.map((item) => `${pad}- ${typeof item === 'object' ? `\n${toYaml(item, indent + 2)}` : toYaml(item, 0)}`).join('\n');
+          }
+          return Object.entries(value).map(([key, entry]) => {
+            if (entry && typeof entry === 'object') return `${pad}${key}:\n${toYaml(entry, indent + 2)}`;
+            return `${pad}${key}: ${toYaml(entry, 0)}`;
+          }).join('\n');
         }
       });
     });
@@ -237,6 +257,183 @@ async function command(args) {
     fail('Usage: participant session <start|status|complete|abandon> [--intent "..."] [--port <n>]');
   }
 
+  if (cmd === 'agent') {
+    const sub = args[1];
+    const action = args[2];
+    const port = runtimePortFromArgs(args);
+    try {
+      if (sub === 'discover') {
+        const result = await runtimeRequest({ port, method: 'GET', pathname: '/v1/agent/protocol' });
+        print([
+          'ARCHIE AGENT PARTICIPATION',
+          'Repository',
+          result.repository?.id || root,
+          'Runtime',
+          'Active',
+          'Agent protocol',
+          result.protocol_version || '1.0',
+          'Available services',
+          '✓ System context',
+          '✓ Change sessions',
+          '✓ Plan review',
+          '✓ Live impact',
+          '✓ Constraints',
+          '✓ Evidence reporting',
+          '✓ Completion review',
+          'Local endpoint',
+          `http://127.0.0.1:${port}/v1/agent`
+        ].join('\n'));
+        return;
+      }
+      if (sub === 'start') {
+        const name = argValue(args, '--name', 'Local Coding Agent');
+        const adapter = startLocalAgent(name);
+        const result = await runtimeRequest({
+          port,
+          method: 'POST',
+          pathname: '/v1/agent/sessions',
+          body: adapter
+        });
+        print(result);
+        return;
+      }
+      if (sub === 'register') {
+        const id = argValue(args, '--id', '');
+        const name = argValue(args, '--name', id || 'Local Coding Agent');
+        const capabilities = String(argValue(args, '--capabilities', '')).split(',').map((entry) => entry.trim()).filter(Boolean);
+        const result = await runtimeRequest({
+          port,
+          method: 'POST',
+          pathname: '/v1/agent/sessions',
+          body: { id, name, capabilities }
+        });
+        print(result);
+        return;
+      }
+      if (sub === 'context') {
+        const sessionId = argValue(args, '--session', '');
+        if (!sessionId) fail('Usage: participant agent context --session <agent_session_id> [--intent "..."] [--detail minimal|focused|comprehensive] [--format json|yaml|markdown|summary]');
+        const declaredIntent = argValue(args, '--intent', '');
+        if (declaredIntent) {
+          await runtimeRequest({
+            port,
+            method: 'POST',
+            pathname: `/v1/agent/sessions/${sessionId}/intent`,
+            body: { intent: { outcome: declaredIntent } }
+          });
+        }
+        const detail = argValue(args, '--detail', 'focused');
+        const format = argValue(args, '--format', 'json').toLowerCase();
+        const result = await runtimeRequest({
+          port,
+          method: 'GET',
+          pathname: `/v1/agent/sessions/${sessionId}/context?detail=${encodeURIComponent(detail)}`
+        });
+        if (format === 'markdown') return print(formatContextMarkdown(result));
+        if (format === 'yaml') return print(toYaml(result));
+        if (format === 'summary') {
+          return print({
+            intent: result.intent,
+            constraints: result.constraints?.map((entry) => entry.statement) || [],
+            important_files: result.important_files?.map((entry) => entry.path) || [],
+            required_evidence: result.required_evidence || []
+          });
+        }
+        print(result);
+        return;
+      }
+      if (sub === 'plan' && action === 'submit') {
+        const sessionId = argValue(args, '--session', '');
+        const file = argValue(args, '--file', '');
+        if (!sessionId || !file) fail('Usage: participant agent plan submit --session <agent_session_id> --file <plan.json>');
+        const result = await runtimeRequest({
+          port,
+          method: 'POST',
+          pathname: `/v1/agent/sessions/${sessionId}/plans`,
+          body: readJsonFile(file)
+        });
+        print(result);
+        return;
+      }
+      if (sub === 'files' && action === 'declare') {
+        const sessionId = argValue(args, '--session', '');
+        const files = String(argValue(args, '--files', '')).split(',').map((entry) => entry.trim()).filter(Boolean);
+        if (!sessionId || !files.length) fail('Usage: participant agent files declare --session <agent_session_id> --files f1,f2');
+        const result = await runtimeRequest({
+          port,
+          method: 'POST',
+          pathname: `/v1/agent/sessions/${sessionId}/files`,
+          body: { files }
+        });
+        print(result);
+        return;
+      }
+      if (sub === 'implementation' && action === 'report') {
+        const sessionId = argValue(args, '--session', '');
+        const file = argValue(args, '--file', '');
+        if (!sessionId || !file) fail('Usage: participant agent implementation report --session <agent_session_id> --file <implementation.json>');
+        const result = await runtimeRequest({
+          port,
+          method: 'POST',
+          pathname: `/v1/agent/sessions/${sessionId}/implementation`,
+          body: readJsonFile(file)
+        });
+        print(result);
+        return;
+      }
+      if (sub === 'evidence' && action === 'submit') {
+        const sessionId = argValue(args, '--session', '');
+        const file = argValue(args, '--file', '');
+        if (!sessionId || !file) fail('Usage: participant agent evidence submit --session <agent_session_id> --file <evidence.json>');
+        const result = await runtimeRequest({
+          port,
+          method: 'POST',
+          pathname: `/v1/agent/sessions/${sessionId}/evidence`,
+          body: readJsonFile(file)
+        });
+        print(result);
+        return;
+      }
+      if (sub === 'verify') {
+        const sessionId = argValue(args, '--session', '');
+        if (!sessionId) fail('Usage: participant agent verify --session <agent_session_id>');
+        const result = await runtimeRequest({
+          port,
+          method: 'POST',
+          pathname: `/v1/agent/sessions/${sessionId}/verify`
+        });
+        print(result);
+        return;
+      }
+      if (sub === 'complete') {
+        const sessionId = argValue(args, '--session', '');
+        if (!sessionId) fail('Usage: participant agent complete --session <agent_session_id>');
+        const result = await runtimeRequest({
+          port,
+          method: 'POST',
+          pathname: `/v1/agent/sessions/${sessionId}/complete`
+        });
+        print(result);
+        return;
+      }
+    } catch {
+      fail(`Runtime API is not available on port ${port}. Start it with: participant serve --port ${port}`);
+    }
+    fail([
+      'Usage:',
+      'participant agent discover [--port <n>]',
+      'participant agent start --name "<name>" [--port <n>]',
+      'participant agent register --id <id> --name "<name>" --capabilities read,write,plan,verify [--port <n>]',
+      'participant agent context --session <agent_session_id> [--intent "..."] [--detail <minimal|focused|comprehensive>] [--format <json|yaml|markdown|summary>] [--port <n>]',
+      'participant agent plan submit --session <agent_session_id> --file <plan.json> [--port <n>]',
+      'participant agent files declare --session <agent_session_id> --files f1,f2 [--port <n>]',
+      'participant agent implementation report --session <agent_session_id> --file <implementation.json> [--port <n>]',
+      'participant agent evidence submit --session <agent_session_id> --file <evidence.json> [--port <n>]',
+      'participant agent verify --session <agent_session_id> [--port <n>]',
+      'participant agent complete --session <agent_session_id> [--port <n>]'
+    ].join('\n'));
+  }
+
   if (cmd === 'status' && args.includes('--live')) {
     const port = runtimePortFromArgs(args);
     try {
@@ -317,7 +514,17 @@ async function command(args) {
       'participant session start [--intent "..."] [--port <n>]',
       'participant session status [--port <n>]',
       'participant session complete [--port <n>]',
-      'participant session abandon [--port <n>]'
+      'participant session abandon [--port <n>]',
+      'participant agent discover [--port <n>]',
+      'participant agent start --name "<name>" [--port <n>]',
+      'participant agent register --id <id> --name "<name>" --capabilities read,write,plan,verify [--port <n>]',
+      'participant agent context --session <agent_session_id> [--intent "..."] [--detail <minimal|focused|comprehensive>] [--format <json|yaml|markdown|summary>] [--port <n>]',
+      'participant agent plan submit --session <agent_session_id> --file <plan.json> [--port <n>]',
+      'participant agent files declare --session <agent_session_id> --files f1,f2 [--port <n>]',
+      'participant agent implementation report --session <agent_session_id> --file <implementation.json> [--port <n>]',
+      'participant agent evidence submit --session <agent_session_id> --file <evidence.json> [--port <n>]',
+      'participant agent verify --session <agent_session_id> [--port <n>]',
+      'participant agent complete --session <agent_session_id> [--port <n>]'
     ]
   });
 }
