@@ -2,6 +2,14 @@
 
 Local-first engineering participant MVP.
 
+## Native IDE substrate strategy
+
+Archie now treats **Lapce** as the primary Rust-native IDE substrate through a canonical Archie IDE bridge contract (`src/ide-bridge`), while retaining **Zed** and other editors as secondary integration targets.
+
+- Primary native substrate: `archie-lapce` (`lapce`)
+- Secondary integration targets: `zed`, `vs-code`, `cursor`, `jetbrains`
+- Stable Archie bridge methods: connect, openProject, openChange, updateContext, diagnostics/filesystem/command/implementation publishing
+
 ## Buzz-backed change rooms
 
 Archie change sessions now run inside persistent Buzz-style change rooms where participants collaborate as equal parties.
