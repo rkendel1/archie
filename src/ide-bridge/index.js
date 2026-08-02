@@ -7,6 +7,23 @@ const { createChangeController } = require('./change-context');
 const { normalizeDiagnostics } = require('./diagnostics');
 const { normalizeFilesystemEvents } = require('./filesystem');
 const { normalizeCommandEvents } = require('./commands');
+const {
+  createFabric,
+  createFabricRoutingPolicy,
+  createCapabilityAuthorizer,
+  FABRIC_API_VERSION,
+  CAPABILITY_SOURCE,
+  FABRIC_SCOPE,
+  FABRIC_MODULE_STATE,
+  FABRIC_HEALTH,
+  FABRIC_ELIGIBILITY,
+  FABRIC_FAILURE_KIND,
+  FABRIC_EXECUTION_OUTCOME,
+  FABRIC_ROUTING_REASON,
+  FABRIC_ROUTE_MISS_REASON,
+  CAPABILITY_CONFLICT_KIND,
+  FABRIC_AUDIT_EVENT
+} = require('./fabric');
 
 const DEFAULT_IMPLEMENTATIONS = {
   primary: {
@@ -26,7 +43,8 @@ const DEFAULT_IMPLEMENTATIONS = {
 function createIdeBridge() {
   const events = createEventStore();
   const sessions = createSessions();
-  const connection = createConnectionController(sessions, events);
+  const fabric = createFabric();
+  const connection = createConnectionController(sessions, events, fabric);
   const project = createProjectController(sessions, events);
   const change = createChangeController(sessions, events);
 
@@ -35,6 +53,45 @@ function createIdeBridge() {
     protocolMethods: BRIDGE_METHODS.slice(),
     connect(request) {
       return connection.connect(request);
+    },
+    disconnect(request) {
+      return connection.disconnect(request);
+    },
+    registerPlugin(request) {
+      return connection.registerPlugin(request);
+    },
+    pluginReady(request) {
+      return connection.pluginReady(request);
+    },
+    pluginStartupFailed(request) {
+      return connection.pluginStartupFailed(request);
+    },
+    pluginShutdown(request) {
+      return connection.pluginShutdown(request);
+    },
+    registerRuntimeCapabilities(request) {
+      return connection.registerRuntimeCapabilities(request);
+    },
+    reportPluginHealth(request) {
+      return connection.reportPluginHealth(request);
+    },
+    routeCapability(request) {
+      return connection.routeCapability(request);
+    },
+    executeCapability(request) {
+      return connection.executeCapability(request);
+    },
+    reconcileFabric(runningPlugins) {
+      return fabric.reconcile(runningPlugins);
+    },
+    listFabricModules() {
+      return fabric.list();
+    },
+    inspectFabricModule(registrationIdOrPluginId) {
+      return fabric.inspect(registrationIdOrPluginId);
+    },
+    fabricSnapshot() {
+      return fabric.snapshot();
     },
     openProject(request) {
       return project.openProject(request);
@@ -75,7 +132,8 @@ function createIdeBridge() {
         implementations: DEFAULT_IMPLEMENTATIONS,
         protocolMethods: BRIDGE_METHODS.slice(),
         sessions: sessions.summary(),
-        events: events.list()
+        events: events.list(),
+        fabric: fabric.snapshot()
       };
     }
   };
@@ -84,5 +142,20 @@ function createIdeBridge() {
 module.exports = {
   BRIDGE_METHODS,
   DEFAULT_IMPLEMENTATIONS,
-  createIdeBridge
+  createIdeBridge,
+  createFabric,
+  createFabricRoutingPolicy,
+  createCapabilityAuthorizer,
+  FABRIC_API_VERSION,
+  CAPABILITY_SOURCE,
+  FABRIC_SCOPE,
+  FABRIC_MODULE_STATE,
+  FABRIC_HEALTH,
+  FABRIC_ELIGIBILITY,
+  FABRIC_FAILURE_KIND,
+  FABRIC_EXECUTION_OUTCOME,
+  FABRIC_ROUTING_REASON,
+  FABRIC_ROUTE_MISS_REASON,
+  CAPABILITY_CONFLICT_KIND,
+  FABRIC_AUDIT_EVENT
 };
