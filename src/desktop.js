@@ -16,6 +16,7 @@ const {
   confirmUnderstanding,
   correctArchitecture
 } = require('./model');
+const { DEFAULT_IMPLEMENTATIONS, BRIDGE_METHODS } = require('./ide-bridge');
 
 const DEFAULT_STATE_PATH = path.join(os.homedir(), '.archie-desktop-state.json');
 const CHANGE_STATUSES = ['draft', 'reviewing', 'approved', 'constrained', 'implementing', 'verifying', 'completed', 'blocked'];
@@ -515,9 +516,35 @@ function workspaceFor(project, route = '/overview') {
       nextImplementations: buildNextImplementations(project),
       activeChange,
       activeRoom,
-      unreadRooms
+      unreadRooms,
+      implementationFabric: buildImplementationFabric(),
+      ideBridge: buildIdeBridgeDescriptor()
     },
     engineeringContext: buildEngineeringContext(activeChange)
+  };
+}
+
+function buildImplementationFabric() {
+  return {
+    primary: DEFAULT_IMPLEMENTATIONS.primary,
+    externalSurfaces: DEFAULT_IMPLEMENTATIONS.secondary,
+    commandRuntime: {
+      mode: 'full-repository-command-support',
+      supportsInteractiveShells: true,
+      evidenceEnabled: true
+    }
+  };
+}
+
+function buildIdeBridgeDescriptor() {
+  return {
+    protocolVersion: '1.0.0',
+    methods: BRIDGE_METHODS,
+    transports: ['http', 'sse', 'websocket', 'ipc'],
+    supportedImplementations: [
+      DEFAULT_IMPLEMENTATIONS.primary.id,
+      ...DEFAULT_IMPLEMENTATIONS.secondary.map((entry) => entry.id)
+    ]
   };
 }
 

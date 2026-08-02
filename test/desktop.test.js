@@ -65,6 +65,10 @@ test('desktop command center supports project workspaces and room collaboration'
   assert.equal(typeof workspace.navigation.reviewQueue, 'number');
   assert.ok(workspace.sections.activeRoom);
   assert.ok(Array.isArray(workspace.sections.nextImplementations));
+  assert.equal(workspace.sections.implementationFabric.primary.ide, 'lapce');
+  assert.ok(workspace.sections.implementationFabric.externalSurfaces.some((entry) => entry.ide === 'zed'));
+  assert.ok(workspace.sections.ideBridge.methods.includes('openChange'));
+  assert.ok(workspace.sections.ideBridge.supportedImplementations.includes('archie-lapce'));
 
   const change = await request(baseUrl, 'POST', `/api/projects/${opened.project.id}/changes`, {
     title: 'Fix Python worker contract',
