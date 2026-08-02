@@ -12,6 +12,15 @@ function createSessions() {
       connectionById.set(connectionId, saved);
       return saved;
     },
+    unregisterConnection(connectionId) {
+      const existing = connectionById.get(connectionId) || null;
+      if (!existing) return null;
+      connectionById.delete(connectionId);
+      return existing;
+    },
+    getConnection(connectionId) {
+      return connectionById.get(connectionId) || null;
+    },
     registerProject(project) {
       const saved = {
         ...project,

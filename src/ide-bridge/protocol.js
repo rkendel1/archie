@@ -2,13 +2,22 @@ const SUPPORTED_TRANSPORTS = new Set(['http', 'sse', 'websocket', 'ipc']);
 
 const BRIDGE_METHODS = [
   'connect',
+  'disconnect',
   'openProject',
   'openChange',
   'updateContext',
   'publishDiagnostics',
   'publishFilesystemEvents',
   'publishCommandEvents',
-  'publishImplementationEvents'
+  'publishImplementationEvents',
+  'registerPlugin',
+  'pluginReady',
+  'pluginStartupFailed',
+  'pluginShutdown',
+  'registerRuntimeCapabilities',
+  'reportPluginHealth',
+  'routeCapability',
+  'executeCapability'
 ];
 
 const REQUIRED_CONTEXT_FIELDS = [
@@ -30,8 +39,80 @@ function validateConnectionRequest(request = {}) {
     transport,
     participantId,
     surfaceId,
+    pluginId: String(request.pluginId || '').trim() || null,
+    voltManifest: request.voltManifest && typeof request.voltManifest === 'object' ? request.voltManifest : {},
+    capabilities: Array.isArray(request.capabilities) ? request.capabilities.filter((entry) => entry && typeof entry === 'object') : [],
     clientVersion: String(request.clientVersion || '0.0.0'),
     metadata: request.metadata && typeof request.metadata === 'object' ? request.metadata : {}
+  };
+}
+
+function validateDisconnectRequest(request = {}) {
+  const connectionId = String(request.connectionId || '').trim();
+  if (!connectionId) throw new Error('disconnect.connectionId is required');
+  return { connectionId, reason: String(request.reason || 'disconnect-requested') };
+}
+
+function validateFabricRegistrationRequest(request = {}) {
+  const participantId = String(request.participantId || '').trim();
+  const surfaceId = String(request.surfaceId || '').trim();
+  if (!participantId) throw new Error('registerPlugin.participantId is required');
+  if (!surfaceId) throw new Error('registerPlugin.surfaceId is required');
+  return {
+    pluginId: String(request.pluginId || '').trim() || null,
+    participantId,
+    surfaceId,
+    voltManifest: request.voltManifest && typeof request.voltManifest === 'object' ? request.voltManifest : {},
+    capabilities: Array.isArray(request.capabilities) ? request.capabilities.filter((entry) => entry && typeof entry === 'object') : [],
+    concurrencyLimits: request.concurrencyLimits && typeof request.concurrencyLimits === 'object' ? request.concurrencyLimits : {},
+    permissionGrant: request.permissionGrant && typeof request.permissionGrant === 'object' ? request.permissionGrant : {},
+    metadata: request.metadata && typeof request.metadata === 'object' ? request.metadata : {}
+  };
+}
+
+function validateFabricRegistrationReference(request = {}, method) {
+  const registrationId = String(request.registrationId || '').trim();
+  const pluginId = String(request.pluginId || '').trim();
+  if (!registrationId && !pluginId) throw new Error(`${method}.registrationId or ${method}.pluginId is required`);
+  return {
+    registrationId: registrationId || null,
+    pluginId: pluginId || null
+  };
+}
+
+function validateRuntimeCapabilityRegistrationRequest(request = {}) {
+  const registrationId = String(request.registrationId || '').trim();
+  const registrationToken = String(request.registrationToken || '').trim();
+  if (!registrationId) throw new Error('registerRuntimeCapabilities.registrationId is required');
+  if (!registrationToken) throw new Error('registerRuntimeCapabilities.registrationToken is required');
+  return {
+    registrationId,
+    registrationToken,
+    capabilities: Array.isArray(request.capabilities) ? request.capabilities.filter((entry) => entry && typeof entry === 'object') : []
+  };
+}
+
+function validateReportHealthRequest(request = {}) {
+  const registrationId = String(request.registrationId || '').trim();
+  const registrationToken = String(request.registrationToken || '').trim();
+  const health = String(request.health || '').trim();
+  if (!registrationId) throw new Error('reportPluginHealth.registrationId is required');
+  if (!registrationToken) throw new Error('reportPluginHealth.registrationToken is required');
+  if (!health) throw new Error('reportPluginHealth.health is required');
+  return { registrationId, registrationToken, health };
+}
+
+function validateCapabilityRequest(request = {}, method = 'routeCapability') {
+  const namespace = String(request.namespace || '').trim();
+  const operation = String(request.operation || '').trim();
+  if (!namespace) throw new Error(`${method}.namespace is required`);
+  if (!operation) throw new Error(`${method}.operation is required`);
+  return {
+    namespace,
+    operation,
+    language: request.language == null ? null : String(request.language).trim(),
+    payload: request.payload,
+    deadline: request.deadline == null ? null : request.deadline
   };
 }
 
@@ -82,7 +163,13 @@ module.exports = {
   BRIDGE_METHODS,
   SUPPORTED_TRANSPORTS,
   validateConnectionRequest,
+  validateDisconnectRequest,
   validateOpenProjectRequest,
   validateOpenChangeRequest,
-  validateContextUpdate
+  validateContextUpdate,
+  validateFabricRegistrationRequest,
+  validateFabricRegistrationReference,
+  validateRuntimeCapabilityRegistrationRequest,
+  validateReportHealthRequest,
+  validateCapabilityRequest
 };
