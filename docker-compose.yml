@@ -11,7 +11,7 @@ services:
       timeout: 3s
       retries: 20
     ports:
-      - "5432:5432"
+      - "5444:5432"
     volumes:
       - archie-postgres:/var/lib/postgresql/data
 
@@ -24,7 +24,7 @@ services:
         condition: service_healthy
     environment:
       ARCHIE_RUNTIME_PORT: 4317
-      ARCHIE_DATABASE_URL: ******postgres:5432/archie
+      ARCHIE_DATABASE_URL: postgres://archie:archie@postgres:5444/archie
       ARCHIE_SESSION_STORE_PATH: /workspace/.archie/session.db
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
     ports:

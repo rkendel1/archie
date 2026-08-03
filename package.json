@@ -12,7 +12,9 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "start": "participant-desktop",
-    "analyze": "participant analyze --summary"
+    "analyze": "participant analyze --summary",
+    "up": "node bin/participant up",
+    "down": "node bin/participant down"
   },
   "keywords": [
     "architecture",

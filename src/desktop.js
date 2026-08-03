@@ -129,8 +129,17 @@ class DesktopRegistry {
   selectProject(projectId, route = '') {
     const project = this.getProject(projectId);
     if (!project) return null;
+    try {
+      const repoPath = path.resolve(project.repository?.path || process.cwd());
+      const model = buildModel(repoPath);
+      saveModel(repoPath, model);
+      hydrateProject(project, model);
+      project.runtime.status = 'connected';
+    } catch (error) {
+      project.runtime.status = 'error';
+      project.runtime.error = String(error && error.message ? error.message : error);
+    }
     this.state.activeProjectId = project.id;
-    project.runtime.status = 'connected';
     project.lastOpenedAt = now();
     if (route) this.state.projectRoutes[project.id] = route;
     this.touchRecent(project.id);
@@ -520,7 +529,7 @@ function workspaceFor(project, route = '/overview') {
       implementationFabric: buildImplementationFabric(),
       ideBridge: buildIdeBridgeDescriptor()
     },
-    engineeringContext: buildEngineeringContext(activeChange)
+    engineeringContext: buildEngineeringContext(activeChange, project.workspace.model)
   };
 }
 
@@ -548,11 +557,17 @@ function buildIdeBridgeDescriptor() {
   };
 }
 
-function buildEngineeringContext(change) {
+function buildEngineeringContext(change, model = {}) {
+  const graph = model?.graph || { nodes: [], edges: [] };
+  const graphSummary = {
+    nodes: Array.isArray(graph.nodes) ? graph.nodes.length : 0,
+    edges: Array.isArray(graph.edges) ? graph.edges.length : 0
+  };
   if (!change) {
     return {
       mode: 'overview',
-      summary: 'Select a change to load engineering context'
+      summary: 'Select a change to load engineering context',
+      graph: graphSummary
     };
   }
   return {
@@ -583,6 +598,7 @@ function buildEngineeringContext(change) {
       completed: change.verification.completed,
       completion: change.completion.ready ? 'Ready' : 'Not ready'
     },
+    graph: graphSummary,
     reviewQueue: buildReviewQueue([change]).summary
   };
 }
@@ -754,7 +770,11 @@ async function api(path, method='GET', body) {
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined
   });
-  return res.json();
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.error || ('Request failed: ' + res.status));
+  }
+  return data;
 }
 
 function el(id) { return document.getElementById(id); }
@@ -771,39 +791,57 @@ function renderCard(container, items, toText) {
 }
 
 async function refreshProjectOptions() {
-  const result = await api('/api/projects');
-  const select = el('projectSelect');
-  select.innerHTML = '';
-  for (const project of result.projects) {
-    const opt = document.createElement('option');
-    opt.value = project.id;
-    opt.textContent = project.name;
-    if (result.activeProjectId === project.id) opt.selected = true;
-    select.appendChild(opt);
+  try {
+    const result = await api('/api/projects');
+    const select = el('projectSelect');
+    select.innerHTML = '';
+    for (const project of result.projects) {
+      const opt = document.createElement('option');
+      opt.value = project.id;
+      opt.textContent = project.name;
+      if (result.activeProjectId === project.id) opt.selected = true;
+      select.appendChild(opt);
+    }
+    activeProjectId = result.activeProjectId || (result.projects[0] && result.projects[0].id) || '';
+    if (activeProjectId) await loadWorkspace();
+  } catch (error) {
+    el('projectMeta').textContent = 'Failed to load projects: ' + error.message;
   }
-  activeProjectId = result.activeProjectId || (result.projects[0] && result.projects[0].id) || '';
-  if (activeProjectId) await loadWorkspace();
 }
 
 async function openProject() {
   const repo = el('repo').value.trim();
   if (!repo) return;
-  const result = await api('/api/projects/open', 'POST', { repo });
-  activeProjectId = result.project.id;
-  await refreshProjectOptions();
+  try {
+    const result = await api('/api/projects/open', 'POST', { repo });
+    activeProjectId = result.project.id;
+    await refreshProjectOptions();
+  } catch (error) {
+    el('projectMeta').textContent = 'Failed to open project: ' + error.message;
+  }
 }
 
 async function selectProject() {
   const id = el('projectSelect').value;
   if (!id) return;
-  await api('/api/projects/select', 'POST', { projectId: id, route: '/overview' });
-  activeProjectId = id;
-  await loadWorkspace();
+  try {
+    await api('/api/projects/select', 'POST', { projectId: id, route: '/overview' });
+    activeProjectId = id;
+    await loadWorkspace();
+  } catch (error) {
+    el('projectMeta').textContent = 'Failed to select project: ' + error.message;
+  }
 }
 
 async function loadWorkspace() {
   if (!activeProjectId) return;
-  const data = await api('/api/projects/' + activeProjectId + '/workspace');
+  let data;
+  try {
+    data = await api('/api/projects/' + activeProjectId + '/workspace');
+  } catch (error) {
+    el('projectMeta').textContent = 'Failed to load workspace: ' + error.message;
+    return;
+  }
   el('workspaceTitle').textContent = data.project.name + ' · Project Workspace';
   el('projectMeta').textContent = data.project.repository.path + '\nRuntime: ' + data.project.runtime.status + '\nBranch: ' + (data.project.repository.branch || 'local');
   el('badgeChanges').textContent = data.navigation.changes;

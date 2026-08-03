@@ -60,9 +60,16 @@ test('desktop command center supports project workspaces and room collaboration'
   });
   assert.equal(selected.restoredRoute, '/changes/active');
 
+  fs.writeFileSync(path.join(repo, 'src', 'new-capability-service.js'), 'module.exports = {}\n');
+  await request(baseUrl, 'POST', '/api/projects/select', {
+    projectId: opened.project.id,
+    route: '/overview'
+  });
+
   const workspace = await request(baseUrl, 'GET', `/api/projects/${opened.project.id}/workspace`);
   assert.ok(workspace.navigation.changes >= 1);
   assert.equal(typeof workspace.navigation.reviewQueue, 'number');
+  assert.ok(workspace.project.workspace.model.importantFiles.some((entry) => entry.file === 'src/new-capability-service.js'));
   assert.ok(workspace.sections.activeRoom);
   assert.ok(Array.isArray(workspace.sections.nextImplementations));
   assert.equal(workspace.sections.implementationFabric.primary.ide, 'lapce');
